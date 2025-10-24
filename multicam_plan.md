@@ -52,26 +52,27 @@ local stratum 10
    ``mkdir ~/pi_controller``  
    ``mkdir ~/video_downloads``
 
-8. **Install Web App:** Copy the ``control_pi_webapp.py`` script into the ``/pi-controller`` directory.
+8. **Install Web App:** Copy the ``control_pi_webapp.py`` script into the ``~/pi-controller`` directory.
 
 ## **4\. Phase 2: Pi Node (Client) Setup**
 
 **(Repeat these steps for *every* camera Pi)**
 
 1. **Install OS:** Install Raspberry Pi OS (Lite) 64-bit.  
-2. **Enable Camera:** Run sudo raspi-config, go to Interface Options \-\> Camera, and enable it.  
+2. **Enable Camera:** Run ``sudo raspi-config``, go to ``Interface Options`` \-\> ``Camera``, and enable it.  
 3. **Assign Static IPs:** Assign a **unique static IP address** to each Pi (e.g., ``192.168.1.101``, ``192.168.1.102``, etc.).  
 4. **Configure NTP Client:** Tell this Pi to sync its clock *only* to your Control Pi.  
-   * Edit ``/etc/systemd/timesyncd.conf`` with sudo nano.  
-   * Comment out any existing NTP= or FallbackNTP= lines.  
+   * Edit ``/etc/systemd/timesyncd.conf`` with ``sudo nano``.  
+   * Comment out any existing ``NTP=`` or ``FallbackNTP=`` lines.  
    * Add this line (using your Control Pi's IP):  
      ``NTP=192.168.1.10``
 
-5. **Restart & Verify Sync:**  
+5. **Restart & Verify Sync:** 
+   ~~~ 
    sudo systemctl restart systemd-timesyncd  
    sleep 10 \# Wait a few seconds  
    timedatectl status
-
+    ~~~
    * You should see NTP server: 192.168.1.10 and NTP synchronized: yes. This is a critical step\!  
 6. **Create Folders:**  
    ``mkdir ~/pi_listener``  
@@ -79,32 +80,35 @@ local stratum 10
 
 7. **Install Listener Script:** Copy the ``pi_node_listener.py`` script into the ``~/pi_listener`` directory.
 
-## **5\. Phase 3: Passwordless SSH (For rsync)**
+## **5\. Phase 3: Passwordless SSH (For ``rsync``)**
 
-The "Download" button uses rsync over SSH. To avoid it asking for a password every time, you must set up SSH keys.
+The "Download" button uses ``rsync`` over SSH. To avoid it asking for a password every time, you must set up SSH keys.
 
 1. **On the Control Pi (Master):**  
-   \# Run this ONCE to generate a key. Press Enter at all prompts.  
+   ~~~
+   # Run this ONCE to generate a key. Press Enter at all prompts.  
    ssh-keygen \-t rsa \-b 4096
+   ~~~
 
 2. **For EACH Pi Node:**  
-   \# Run this from the Control Pi, replacing with each node's IP  
+   ~~~
+   # Run this from the Control Pi, replacing with each node's IP  
    ssh-copy-id pi@192.168.1.101  
    ssh-copy-id pi@192.168.1.102  
-   \# ... and so on for all nodes
-
+   # ... and so on for all nodes
+   ~~~
    * You will be asked for the node's password one last time. After this, the Control Pi can log in automatically.
 
 ## **6\. Phase 4: Running the System**
 
 1. **Start Listeners:** On *each* **Pi Node**, run:  
-   python \~/pi\_listener/pi\_node\_listener.py
+   ``python ~/pi_listener/pi_node_listener.py``
 
 2. **Start Web App:** On the **Control Pi**, run:  
-   python \~/pi\_controller/control\_pi\_webapp.py
+   ``python ~/pi_controller/control_pi_webapp.py``
 
 3. Open UI: On your computer (on the same network), open your browser and go to:  
-   http://192.168.1.10:8080  
+   ``http://192.168.1.10:8080``  
 4. **Workflow:**  
    * Type a Take Name (e.g., test\_001\_windy) and click **START**.  
    * Click **MARK** at any time to add a timestamp to the log files.  
@@ -114,7 +118,7 @@ The "Download" button uses rsync over SSH. To avoid it asking for a password eve
 ## **7\. Post-Production: Your File Structure**
 
 After downloading, your \~/video\_downloads folder on the **Control Pi** will look like this:
-
+~~~
 video\_downloads/  
   ├── test\_001\_windy/  
   │   ├── 192.168.1.101/  
@@ -131,7 +135,7 @@ video\_downloads/
       │   ├── ...  
       └── 192.168.1.102/  
           ├── ...
-
+~~~
 All files are synchronized, segmented, and pre-organized for you.
 
 ## **8\. Next Step: Automation**
