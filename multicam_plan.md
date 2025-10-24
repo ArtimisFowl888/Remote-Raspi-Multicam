@@ -70,7 +70,7 @@ local stratum 10
 5. **Restart & Verify Sync:** 
    ~~~ 
    sudo systemctl restart systemd-timesyncd  
-   sleep 10 \# Wait a few seconds  
+   sleep 10  
    timedatectl status
     ~~~
    * You should see NTP server: 192.168.1.10 and NTP synchronized: yes. This is a critical step\!  
