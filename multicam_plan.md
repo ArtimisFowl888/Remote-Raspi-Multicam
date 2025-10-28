@@ -12,7 +12,7 @@ This document is the master plan for building a system for synchronized, remotel
 * **N x Pi Nodes (Clients):** Raspberry Pis (Pi 3B+, 4, or 5\) with cameras.  
   * Sync their internal clocks to the Control Pi's NTP server.  
   * Run a **Listener Script** that waits for commands from the Control Pi.  
-  * Execute ``libcamera-vid`` to record video and log markers.
+  * Execute ``picamera2`` and ``ffmpeg`` to record video and log markers.
 
 ## **2\. Hardware Requirements**
 
