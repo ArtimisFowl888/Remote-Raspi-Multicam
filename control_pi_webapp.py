@@ -608,11 +608,6 @@ HTML_TEMPLATE = """
         .status-section {
             margin-bottom: 1.75rem;
         }
-        .status-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1rem;
-        }
         .node-summary {
             margin-bottom: 1.25rem;
             overflow-x: auto;
@@ -649,64 +644,6 @@ HTML_TEMPLATE = """
             text-align: center;
             font-size: 0.9rem;
             color: #475569;
-        }
-        .status-card {
-            background: #f9fbfc;
-            border-radius: 12px;
-            border: 1px solid #e3e9ef;
-            padding: 1rem 1.25rem;
-            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
-        }
-        .status-card-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 0.75rem;
-            margin-bottom: 0.5rem;
-        }
-        .status-indicator {
-            width: 12px;
-            height: 12px;
-            border-radius: 999px;
-            display: inline-block;
-            box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.8);
-        }
-        .status-indicator.status-online { background-color: #28a745; }
-        .status-indicator.status-recording { background-color: #dc3545; }
-        .status-indicator.status-warning { background-color: #ffc107; }
-        .status-indicator.status-offline { background-color: #6c757d; }
-        .status-ip {
-            font-weight: 700;
-            color: #0f172a;
-            flex: 1;
-        }
-        .status-state {
-            font-size: 0.8rem;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            color: #475569;
-        }
-        .status-card-body .status-line {
-            margin-bottom: 0.35rem;
-            font-size: 0.9rem;
-            color: #1e293b;
-        }
-        .status-card-body .status-line.small {
-            font-size: 0.8rem;
-            color: #64748b;
-        }
-        .status-card-body .status-line.error {
-            color: #b91c1c;
-            font-weight: 600;
-        }
-        .status-empty {
-            font-size: 0.9rem;
-            color: #475569;
-            padding: 0.85rem 1rem;
-            background: #f1f5f9;
-            border-radius: 10px;
-            border: 1px dashed #cbd5f5;
-            text-align: center;
         }
         .download-status {
             display: flex;
@@ -770,9 +707,50 @@ HTML_TEMPLATE = """
         {% endwith %}
 
         <div class="status-section">
-            <h2>Node Status</h2>
+            <h2>Download Status</h2>
+            <div id="download-status" class="download-status">
+                <span class="status-pill status-idle">IDLE</span>
+                <span class="download-message">No downloads in progress.</span>
+            </div>
+        </div>
+
+        <div class="status-section">
+            <h2>Activity Log</h2>
+            <pre id="log-window" class="log-window" aria-live="polite">Waiting for log output...</pre>
+        </div>
+
+        <form action="{{ url_for('start') }}" method="POST">
+            <div class="form-group">
+                <label for="take_name">Take Name</label>
+                <input type="text" id="take_name" name="take_name" placeholder="e.g., test1_no_wind" required>
+            </div>
+            <button type="submit" class="btn-start">START</button>
+        </form>
+
+        <form action="{{ url_for('mark') }}" method="POST" class="mark-form">
+            <div class="form-group">
+                <label for="mark_note">Marker Note (optional)</label>
+                <input type="text" id="mark_note" name="mark_note" placeholder="Describe the marker (optional)">
+            </div>
+            <button type="submit" class="btn-mark">MARK</button>
+        </form>
+
+        <div class="button-grid">
+            <form action="{{ url_for('stop') }}" method="POST" style="margin:0;">
+                <button type="submit" class="btn-stop" style="width:100%;">STOP</button>
+            </form>
+            <form action="{{ url_for('download') }}" method="POST" style="margin:0;">
+                <button type="submit" class="btn-download">DOWNLOAD & SORT FILES</button>
+            </form>
+            <form action="{{ url_for('wipe') }}" method="POST" style="margin:0;" onsubmit="return confirm('Delete all videos from every node? This cannot be undone.');">
+                <button type="submit" class="btn-delete" style="width:100%;">DELETE OLD RECORDINGS</button>
+            </form>
+        </div>
+
+        <div class="status-section">
+            <h2>Node Status Summary</h2>
             <div class="node-summary">
-                <table class="node-table" aria-describedby="node-status-grid">
+                <table class="node-table" aria-describedby="node-status-table-body">
                     <thead>
                         <tr>
                             <th scope="col">Node</th>
@@ -823,89 +801,6 @@ HTML_TEMPLATE = """
                     </tbody>
                 </table>
             </div>
-            <div id="node-status-grid" class="status-grid">
-                {% if initial_nodes %}
-                    {% for ip, node in initial_nodes|dictsort %}
-                        {% set recording = node.recording %}
-                        {% set reachable = node.reachable %}
-                        {% set has_error = node.last_error %}
-                        {% if recording %}
-                            {% set state_class = 'recording' %}
-                            {% set state_label = 'Recording' %}
-                        {% elif reachable %}
-                            {% if has_error %}
-                                {% set state_class = 'warning' %}
-                                {% set state_label = 'Online (Check logs)' %}
-                            {% else %}
-                                {% set state_class = 'online' %}
-                                {% set state_label = 'Online' %}
-                            {% endif %}
-                        {% else %}
-                            {% set state_class = 'offline' %}
-                            {% set state_label = 'Offline' %}
-                        {% endif %}
-                        <div class="status-card">
-                            <div class="status-card-header">
-                                <span class="status-indicator status-{{ state_class }}" title="{{ state_label }}"></span>
-                                <span class="status-ip">{{ ip }}</span>
-                                <span class="status-state">{{ state_label }}</span>
-                            </div>
-                            <div class="status-card-body">
-                                <div class="status-line"><strong>Recording:</strong> {{ 'Yes' if recording else 'No' }}</div>
-                                <div class="status-line"><strong>Take:</strong> {{ node.take_name or '--' }}</div>
-                                <div class="status-line"><strong>Heartbeat:</strong> {{ node.last_heartbeat or '--' }}</div>
-                                <div class="status-line small"><strong>Last Cmd:</strong> {{ node.last_command or '--' }}</div>
-                                {% if node.last_error %}
-                                    <div class="status-line error">[!] {{ node.last_error }}</div>
-                                {% endif %}
-                            </div>
-                        </div>
-                    {% endfor %}
-                {% else %}
-                    <div class="status-empty">Waiting for heartbeat...</div>
-                {% endif %}
-            </div>
-        </div>
-
-        <div class="status-section">
-            <h2>Download Status</h2>
-            <div id="download-status" class="download-status">
-                <span class="status-pill status-idle">IDLE</span>
-                <span class="download-message">No downloads in progress.</span>
-            </div>
-        </div>
-
-        <div class="status-section">
-            <h2>Activity Log</h2>
-            <pre id="log-window" class="log-window" aria-live="polite">Waiting for log output...</pre>
-        </div>
-
-        <form action="{{ url_for('start') }}" method="POST">
-            <div class="form-group">
-                <label for="take_name">Take Name</label>
-                <input type="text" id="take_name" name="take_name" placeholder="e.g., test1_no_wind" required>
-            </div>
-            <button type="submit" class="btn-start">START</button>
-        </form>
-
-        <form action="{{ url_for('mark') }}" method="POST" class="mark-form">
-            <div class="form-group">
-                <label for="mark_note">Marker Note (optional)</label>
-                <input type="text" id="mark_note" name="mark_note" placeholder="Describe the marker (optional)">
-            </div>
-            <button type="submit" class="btn-mark">MARK</button>
-        </form>
-
-        <div class="button-grid">
-            <form action="{{ url_for('stop') }}" method="POST" style="margin:0;">
-                <button type="submit" class="btn-stop" style="width:100%;">STOP</button>
-            </form>
-            <form action="{{ url_for('download') }}" method="POST" style="margin:0;">
-                <button type="submit" class="btn-download">DOWNLOAD & SORT FILES</button>
-            </form>
-            <form action="{{ url_for('wipe') }}" method="POST" style="margin:0;" onsubmit="return confirm('Delete all videos from every node? This cannot be undone.');">
-                <button type="submit" class="btn-delete" style="width:100%;">DELETE OLD RECORDINGS</button>
-            </form>
         </div>
     </div>
     <script>
@@ -916,7 +811,6 @@ HTML_TEMPLATE = """
             serverTime: {{ initial_server_time | tojson }}
         };
 
-        const nodeStatusGrid = document.getElementById('node-status-grid');
         const nodeStatusTableBody = document.getElementById('node-status-table-body');
         const downloadStatusEl = document.getElementById('download-status');
         const logWindow = document.getElementById('log-window');
@@ -1015,59 +909,6 @@ HTML_TEMPLATE = """
             });
         }
 
-        function renderNodeStatuses(nodes) {
-            if (!nodeStatusGrid) {
-                renderNodeStatusTable(nodes);
-                return;
-            }
-            nodeStatusGrid.innerHTML = '';
-            const entries = Object.values(nodes || {}).sort((a, b) => {
-                const left = (a && a.ip) ? String(a.ip) : '';
-                const right = (b && b.ip) ? String(b.ip) : '';
-                return left.localeCompare(right);
-            });
-            if (!entries.length) {
-                renderNodeStatusTable(nodes);
-                const empty = document.createElement('div');
-                empty.className = 'status-empty';
-                empty.textContent = 'No nodes configured.';
-                nodeStatusGrid.appendChild(empty);
-                return;
-            }
-
-            entries.forEach((node) => {
-                const card = document.createElement('div');
-                card.className = 'status-card';
-
-                const stateClass = getNodeState(node);
-                const takeDisplay = node.take_name || '--';
-                const heartbeatDisplay = formatRelativeTime(node.last_heartbeat);
-                const lastCommand = node.last_command ? node.last_command : '--';
-                const errorBlock = node.last_error
-                    ? `<div class="status-line error">[!] ${escapeHtml(node.last_error)}</div>`
-                    : '';
-
-                card.innerHTML = `
-                    <div class="status-card-header">
-                        <span class="status-indicator status-${stateClass}" title="${escapeHtml(stateLabels[stateClass] || stateClass)}"></span>
-                        <span class="status-ip">${escapeHtml(node.ip || 'Unknown')}</span>
-                        <span class="status-state">${escapeHtml(stateLabels[stateClass] || stateClass)}</span>
-                    </div>
-                    <div class="status-card-body">
-                        <div class="status-line"><strong>Recording:</strong> ${node.recording ? 'Yes' : 'No'}</div>
-                        <div class="status-line"><strong>Take:</strong> ${escapeHtml(takeDisplay)}</div>
-                        <div class="status-line"><strong>Heartbeat:</strong> ${escapeHtml(heartbeatDisplay)}</div>
-                        <div class="status-line small"><strong>Last Cmd:</strong> ${escapeHtml(lastCommand)}</div>
-                        ${errorBlock}
-                    </div>
-                `;
-
-                nodeStatusGrid.appendChild(card);
-            });
-
-            renderNodeStatusTable(nodes);
-        }
-
         function renderDownloadStatus(download) {
             if (!downloadStatusEl) {
                 return;
@@ -1110,7 +951,7 @@ HTML_TEMPLATE = """
                     throw new Error(`HTTP ${response.status}`);
                 }
                 const data = await response.json();
-                renderNodeStatuses(data.nodes);
+                renderNodeStatusTable(data.nodes);
                 renderDownloadStatus(data.download);
             } catch (error) {
                 console.warn('Failed to refresh status', error);
@@ -1131,7 +972,7 @@ HTML_TEMPLATE = """
         }
 
         document.addEventListener('DOMContentLoaded', () => {
-            renderNodeStatuses(initialData.nodes);
+            renderNodeStatusTable(initialData.nodes);
             renderDownloadStatus(initialData.download);
             renderLogs(initialData.logs);
 
