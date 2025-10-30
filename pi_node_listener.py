@@ -1,3 +1,4 @@
+import json
 import socket
 import os
 from datetime import datetime
@@ -34,7 +35,12 @@ encoder = None
 splittable_output = None
 segment_rotator = None
 recording_active = False
+current_take_name = None
+last_error_message = ""
 log_file_handle = None
+
+if PICAMERA_IMPORT_ERROR is not None:
+    last_error_message = f"Picamera2 unavailable: {PICAMERA_IMPORT_ERROR}"
 
 
 class SegmentRotator:
@@ -109,7 +115,7 @@ def initialize_camera():
 
 def start_recording(take_name):
     """Starts the Picamera2 recording process with a given take name."""
-    global recording_active, log_file_handle, splittable_output, segment_rotator
+    global recording_active, log_file_handle, splittable_output, segment_rotator, current_take_name, last_error_message
 
     if recording_active:
         print(f"[{datetime.now().isoformat()}] [Warning] Already recording. Ignoring START command.")
@@ -163,6 +169,8 @@ def start_recording(take_name):
         segment_rotator.start(starting_index=0)
 
         recording_active = True
+        current_take_name = take_name
+        last_error_message = ""
 
         print(f"[{datetime.now().isoformat()}] [Success] Recording started using Picamera2.")
         print(f"[{datetime.now().isoformat()}] [Info] Marker file created: {log_filename}")
@@ -172,6 +180,8 @@ def start_recording(take_name):
         recording_active = False
         splittable_output = None
         segment_rotator = None
+        last_error_message = str(e)
+        current_take_name = None
         if log_file_handle and not log_file_handle.closed:
             try:
                 log_file_handle.write(f"# Recording start failed at: {datetime.now().isoformat()}\n")
@@ -184,7 +194,7 @@ def start_recording(take_name):
 
 def stop_recording():
     """Stops the recording process gracefully."""
-    global recording_active, log_file_handle, splittable_output, segment_rotator
+    global recording_active, log_file_handle, splittable_output, segment_rotator, current_take_name, last_error_message
 
     if not recording_active:
         print(f"[{datetime.now().isoformat()}] [Warning] Not recording. Ignoring STOP command.")
@@ -211,12 +221,16 @@ def stop_recording():
         else:
             print(f"[{datetime.now().isoformat()}] [Success] Recording stopped (camera already released).")
 
+        last_error_message = ""
+
     except Exception as e:
         print(f"[{datetime.now().isoformat()}] [Error] Error stopping recording: {e}")
+        last_error_message = str(e)
 
     finally:
         recording_active = False
         splittable_output = None
+        current_take_name = None
         if log_file_handle:
             try:
                 log_file_handle.write(f"# Recording stopped at: {datetime.now().isoformat()}\n")
@@ -229,6 +243,7 @@ def stop_recording():
 
 def mark_timecode(note=None):
     """Writes a marker (current timestamp) to the log file."""
+    global last_error_message
     if not log_file_handle or log_file_handle.closed:
         print(f"[{datetime.now().isoformat()}] [Warning] Cannot mark timecode, not recording or log is closed.")
         return
@@ -247,10 +262,12 @@ def mark_timecode(note=None):
 
     except Exception as e:
         print(f"[{datetime.now().isoformat()}] [Error] Failed to write marker: {e}")
+        last_error_message = str(e)
 
 
 def main():
     """Main function to run the socket server."""
+    global last_error_message
     # Ensure video directory exists on startup
     try:
         os.makedirs(VIDEO_PATH, exist_ok=True)
@@ -298,12 +315,24 @@ def main():
                             print(f"[{datetime.now().isoformat()}] [Info] Received MARK command{f' with note: {note}' if note else '.'}")
                             mark_timecode(note or None)
                             conn.sendall(b'ACK_MARK')
+                        elif command == 'STATUS':
+                            status_payload = {
+                                "recording": recording_active,
+                                "take_name": current_take_name,
+                                "last_error": last_error_message,
+                                "picamera_available": PICAMERA_IMPORT_ERROR is None,
+                            }
+                            try:
+                                conn.sendall(f"STATUS:{json.dumps(status_payload)}".encode('utf-8'))
+                            except Exception as send_error:
+                                print(f"[{datetime.now().isoformat()}] [Error] Failed to send STATUS response: {send_error}")
                         else:
                             print(f"[{datetime.now().isoformat()}] [Warning] Unknown command: {command}")
                             conn.sendall(b'ACK_UNKNOWN')
 
                     except Exception as e:
                         print(f"[{datetime.now().isoformat()}] [Error] Error handling connection from {addr}: {e}")
+                        last_error_message = str(e)
 
     except KeyboardInterrupt:
         print(f"\n[{datetime.now().isoformat()}] [Info] Shutting down server...")
