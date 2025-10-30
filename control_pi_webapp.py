@@ -12,7 +12,7 @@ import sys
 from collections import deque
 from dataclasses import dataclass, asdict
 from datetime import datetime
-from typing import Dict
+from typing import Dict, Tuple
 from flask import Flask, render_template_string, request, redirect, url_for, flash, jsonify
 
 # --- Configuration ---
@@ -107,7 +107,8 @@ class NodeStatus:
 
 node_status_lock = threading.Lock()
 node_statuses: Dict[str, NodeStatus] = {ip: NodeStatus(ip=ip) for ip in PI_NODES}
-STATUS_POLL_INTERVAL_SECONDS = 5
+last_logged_node_states: Dict[str, Tuple[bool, bool, str, str, str, bool]] = {}
+STATUS_POLL_INTERVAL_SECONDS = 10
 status_monitor_started = threading.Event()
 
 
@@ -126,6 +127,74 @@ def get_node_status_snapshot() -> Dict[str, Dict]:
         return {ip: status.to_dict() for ip, status in node_statuses.items()}
 
 
+def log_node_status_summary(force: bool = False) -> None:
+    """Print a concise status summary for all nodes to the CLI when changes occur."""
+    with node_status_lock:
+        snapshot = {ip: status for ip, status in node_statuses.items()}
+
+    if not snapshot:
+        return
+
+    current_time = time.time()
+    current_ips = set(snapshot.keys())
+    changed = force
+
+    for ip, status in snapshot.items():
+        state_key = (
+            status.reachable,
+            status.recording,
+            status.take_name,
+            status.last_error,
+            status.last_command,
+            bool(status.last_heartbeat),
+        )
+        if last_logged_node_states.get(ip) != state_key:
+            changed = True
+            last_logged_node_states[ip] = state_key
+
+    removed = set(last_logged_node_states.keys()) - current_ips
+    if removed:
+        changed = True
+        for ip in removed:
+            del last_logged_node_states[ip]
+
+    if not changed:
+        return
+
+    now_iso = datetime.now().isoformat()
+    lines = []
+
+    for ip in sorted(snapshot.keys()):
+        status = snapshot[ip]
+        if status.recording:
+            state_label = "RECORDING"
+        elif status.reachable:
+            state_label = "ONLINE"
+        else:
+            state_label = "OFFLINE"
+
+        take_display = status.take_name or "--"
+        heartbeat_display = "--"
+        if status.last_heartbeat:
+            age = max(current_time - status.last_heartbeat, 0.0)
+            if age < 5:
+                heartbeat_display = "just now"
+            elif age < 60:
+                heartbeat_display = f"{int(age)}s ago"
+            elif age < 3600:
+                heartbeat_display = f"{int(age // 60)}m ago"
+            else:
+                heartbeat_display = f"{int(age // 3600)}h ago"
+
+        error_display = status.last_error or "none"
+        last_cmd_display = status.last_command or "--"
+        lines.append(
+            f"{ip} [{state_label}] take={take_display} heartbeat={heartbeat_display} cmd={last_cmd_display} error={error_display}"
+        )
+
+    print(f"[{now_iso}] [Status] Node summary:\n  " + "\n  ".join(lines))
+
+
 async def poll_all_statuses():
     """Request STATUS from all nodes concurrently."""
     if not PI_NODES:
@@ -139,6 +208,7 @@ def _status_polling_loop():
     while True:
         try:
             asyncio.run(poll_all_statuses())
+            log_node_status_summary()
         except Exception as exc:
             print(f"[{datetime.now().isoformat()}] [Warning] Status polling error: {exc}")
         time.sleep(STATUS_POLL_INTERVAL_SECONDS)
@@ -543,6 +613,43 @@ HTML_TEMPLATE = """
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 1rem;
         }
+        .node-summary {
+            margin-bottom: 1.25rem;
+            overflow-x: auto;
+        }
+        .node-table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 620px;
+        }
+        .node-table thead th {
+            font-size: 0.78rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #4a5568;
+            border-bottom: 2px solid #e3e9ef;
+            padding: 0.55rem 0.75rem;
+            background: #f8fafc;
+        }
+        .node-table tbody td {
+            padding: 0.6rem 0.75rem;
+            border-bottom: 1px solid #eef2f7;
+            font-size: 0.9rem;
+            color: #1e293b;
+        }
+        .node-table tbody tr:last-child td {
+            border-bottom: none;
+        }
+        .node-table .status-pill {
+            padding: 0.2rem 0.6rem;
+            font-size: 0.7rem;
+        }
+        .node-table .empty-row td {
+            text-align: center;
+            font-size: 0.9rem;
+            color: #475569;
+        }
         .status-card {
             background: #f9fbfc;
             border-radius: 12px;
@@ -629,6 +736,9 @@ HTML_TEMPLATE = """
         .status-pill.status-warning { background: #ffc107; color: #212529; }
         .status-pill.status-error { background: #dc3545; color: #fff; }
         .status-pill.status-idle { background: #6c757d; color: #fff; }
+        .status-pill.status-online { background: #dcfce7; color: #166534; }
+        .status-pill.status-recording { background: #fee2e2; color: #b91c1c; }
+        .status-pill.status-offline { background: #e2e8f0; color: #475569; }
         .download-message {
             font-size: 0.9rem;
             color: #1e293b;
@@ -661,8 +771,99 @@ HTML_TEMPLATE = """
 
         <div class="status-section">
             <h2>Node Status</h2>
+            <div class="node-summary">
+                <table class="node-table" aria-describedby="node-status-grid">
+                    <thead>
+                        <tr>
+                            <th scope="col">Node</th>
+                            <th scope="col">Status</th>
+                            <th scope="col">Recording</th>
+                            <th scope="col">Take</th>
+                            <th scope="col">Heartbeat</th>
+                            <th scope="col">Last Cmd</th>
+                            <th scope="col">Last Error</th>
+                        </tr>
+                    </thead>
+                    <tbody id="node-status-table-body">
+                        {% if initial_nodes %}
+                            {% for ip, node in initial_nodes|dictsort %}
+                                {% set recording = node.recording %}
+                                {% set reachable = node.reachable %}
+                                {% set has_error = node.last_error %}
+                                {% if recording %}
+                                    {% set state_class = 'recording' %}
+                                    {% set state_label = 'Recording' %}
+                                {% elif reachable %}
+                                    {% if has_error %}
+                                        {% set state_class = 'warning' %}
+                                        {% set state_label = 'Online (Check logs)' %}
+                                    {% else %}
+                                        {% set state_class = 'online' %}
+                                        {% set state_label = 'Online' %}
+                                    {% endif %}
+                                {% else %}
+                                    {% set state_class = 'offline' %}
+                                    {% set state_label = 'Offline' %}
+                                {% endif %}
+                                <tr>
+                                    <td>{{ ip }}</td>
+                                    <td><span class="status-pill status-{{ state_class }}">{{ state_label }}</span></td>
+                                    <td>{{ 'Yes' if recording else 'No' }}</td>
+                                    <td>{{ node.take_name or '--' }}</td>
+                                    <td>{{ node.last_heartbeat or '--' }}</td>
+                                    <td>{{ node.last_command or '--' }}</td>
+                                    <td>{{ node.last_error or '--' }}</td>
+                                </tr>
+                            {% endfor %}
+                        {% else %}
+                            <tr class="empty-row">
+                                <td colspan="7">Waiting for heartbeat...</td>
+                            </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
             <div id="node-status-grid" class="status-grid">
-                <div class="status-empty">Waiting for heartbeat...</div>
+                {% if initial_nodes %}
+                    {% for ip, node in initial_nodes|dictsort %}
+                        {% set recording = node.recording %}
+                        {% set reachable = node.reachable %}
+                        {% set has_error = node.last_error %}
+                        {% if recording %}
+                            {% set state_class = 'recording' %}
+                            {% set state_label = 'Recording' %}
+                        {% elif reachable %}
+                            {% if has_error %}
+                                {% set state_class = 'warning' %}
+                                {% set state_label = 'Online (Check logs)' %}
+                            {% else %}
+                                {% set state_class = 'online' %}
+                                {% set state_label = 'Online' %}
+                            {% endif %}
+                        {% else %}
+                            {% set state_class = 'offline' %}
+                            {% set state_label = 'Offline' %}
+                        {% endif %}
+                        <div class="status-card">
+                            <div class="status-card-header">
+                                <span class="status-indicator status-{{ state_class }}" title="{{ state_label }}"></span>
+                                <span class="status-ip">{{ ip }}</span>
+                                <span class="status-state">{{ state_label }}</span>
+                            </div>
+                            <div class="status-card-body">
+                                <div class="status-line"><strong>Recording:</strong> {{ 'Yes' if recording else 'No' }}</div>
+                                <div class="status-line"><strong>Take:</strong> {{ node.take_name or '--' }}</div>
+                                <div class="status-line"><strong>Heartbeat:</strong> {{ node.last_heartbeat or '--' }}</div>
+                                <div class="status-line small"><strong>Last Cmd:</strong> {{ node.last_command or '--' }}</div>
+                                {% if node.last_error %}
+                                    <div class="status-line error">[!] {{ node.last_error }}</div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="status-empty">Waiting for heartbeat...</div>
+                {% endif %}
             </div>
         </div>
 
@@ -676,7 +877,7 @@ HTML_TEMPLATE = """
 
         <div class="status-section">
             <h2>Activity Log</h2>
-            <pre id="log-window" class="log-window" aria-live="polite">Waiting for log output…</pre>
+            <pre id="log-window" class="log-window" aria-live="polite">Waiting for log output...</pre>
         </div>
 
         <form action="{{ url_for('start') }}" method="POST">
@@ -708,7 +909,15 @@ HTML_TEMPLATE = """
         </div>
     </div>
     <script>
+        const initialData = {
+            nodes: {{ initial_nodes | tojson }},
+            download: {{ initial_download | tojson }},
+            logs: {{ initial_logs | tojson }},
+            serverTime: {{ initial_server_time | tojson }}
+        };
+
         const nodeStatusGrid = document.getElementById('node-status-grid');
+        const nodeStatusTableBody = document.getElementById('node-status-table-body');
         const downloadStatusEl = document.getElementById('download-status');
         const logWindow = document.getElementById('log-window');
 
@@ -718,6 +927,19 @@ HTML_TEMPLATE = """
             offline: 'Offline',
             warning: 'Online (Check logs)'
         };
+
+        function getNodeState(node) {
+            if (node && node.reachable) {
+                if (node.recording) {
+                    return 'recording';
+                }
+                if (node.last_error) {
+                    return 'warning';
+                }
+                return 'online';
+            }
+            return 'offline';
+        }
 
         function escapeHtml(value) {
             if (value === null || value === undefined) {
@@ -733,7 +955,7 @@ HTML_TEMPLATE = """
 
         function formatRelativeTime(isoString) {
             if (!isoString) {
-                return '—';
+                return '--';
             }
             const parsed = Date.parse(isoString);
             if (Number.isNaN(parsed)) {
@@ -754,13 +976,58 @@ HTML_TEMPLATE = """
             return `${diffDay}d ago`;
         }
 
+        function renderNodeStatusTable(nodes) {
+            if (!nodeStatusTableBody) {
+                return;
+            }
+            nodeStatusTableBody.innerHTML = '';
+            const entries = Object.values(nodes || {}).sort((a, b) => {
+                const left = (a && a.ip) ? String(a.ip) : '';
+                const right = (b && b.ip) ? String(b.ip) : '';
+                return left.localeCompare(right);
+            });
+            if (!entries.length) {
+                const emptyRow = document.createElement('tr');
+                emptyRow.className = 'empty-row';
+                emptyRow.innerHTML = '<td colspan="7">No nodes configured.</td>';
+                nodeStatusTableBody.appendChild(emptyRow);
+                return;
+            }
+
+            entries.forEach((node) => {
+                const row = document.createElement('tr');
+                const nodeState = getNodeState(node);
+                const takeDisplay = node.take_name || '--';
+                const recordingLabel = node.recording ? 'Yes' : 'No';
+                const heartbeatDisplay = formatRelativeTime(node.last_heartbeat);
+                const lastCommand = node.last_command ? node.last_command : '--';
+                const lastError = node.last_error ? node.last_error : '--';
+                row.innerHTML = `
+                    <td>${escapeHtml(node.ip || 'Unknown')}</td>
+                    <td><span class="status-pill status-${nodeState}">${escapeHtml(stateLabels[nodeState] || nodeState)}</span></td>
+                    <td>${escapeHtml(recordingLabel)}</td>
+                    <td>${escapeHtml(takeDisplay)}</td>
+                    <td>${escapeHtml(heartbeatDisplay)}</td>
+                    <td>${escapeHtml(lastCommand)}</td>
+                    <td>${escapeHtml(lastError)}</td>
+                `;
+                nodeStatusTableBody.appendChild(row);
+            });
+        }
+
         function renderNodeStatuses(nodes) {
             if (!nodeStatusGrid) {
+                renderNodeStatusTable(nodes);
                 return;
             }
             nodeStatusGrid.innerHTML = '';
-            const entries = Object.values(nodes || {});
+            const entries = Object.values(nodes || {}).sort((a, b) => {
+                const left = (a && a.ip) ? String(a.ip) : '';
+                const right = (b && b.ip) ? String(b.ip) : '';
+                return left.localeCompare(right);
+            });
             if (!entries.length) {
+                renderNodeStatusTable(nodes);
                 const empty = document.createElement('div');
                 empty.className = 'status-empty';
                 empty.textContent = 'No nodes configured.';
@@ -772,21 +1039,12 @@ HTML_TEMPLATE = """
                 const card = document.createElement('div');
                 card.className = 'status-card';
 
-                let stateClass = 'offline';
-                if (node.reachable) {
-                    if (node.recording) {
-                        stateClass = 'recording';
-                    } else if (node.last_error) {
-                        stateClass = 'warning';
-                    } else {
-                        stateClass = 'online';
-                    }
-                }
-
-                const takeDisplay = node.recording ? (node.take_name || '—') : '—';
+                const stateClass = getNodeState(node);
+                const takeDisplay = node.take_name || '--';
                 const heartbeatDisplay = formatRelativeTime(node.last_heartbeat);
+                const lastCommand = node.last_command ? node.last_command : '--';
                 const errorBlock = node.last_error
-                    ? `<div class="status-line error">⚠️ ${escapeHtml(node.last_error)}</div>`
+                    ? `<div class="status-line error">[!] ${escapeHtml(node.last_error)}</div>`
                     : '';
 
                 card.innerHTML = `
@@ -799,13 +1057,15 @@ HTML_TEMPLATE = """
                         <div class="status-line"><strong>Recording:</strong> ${node.recording ? 'Yes' : 'No'}</div>
                         <div class="status-line"><strong>Take:</strong> ${escapeHtml(takeDisplay)}</div>
                         <div class="status-line"><strong>Heartbeat:</strong> ${escapeHtml(heartbeatDisplay)}</div>
-                        <div class="status-line small"><strong>Last Cmd:</strong> ${escapeHtml(node.last_command || '—')}</div>
+                        <div class="status-line small"><strong>Last Cmd:</strong> ${escapeHtml(lastCommand)}</div>
                         ${errorBlock}
                     </div>
                 `;
 
                 nodeStatusGrid.appendChild(card);
             });
+
+            renderNodeStatusTable(nodes);
         }
 
         function renderDownloadStatus(download) {
@@ -871,9 +1131,13 @@ HTML_TEMPLATE = """
         }
 
         document.addEventListener('DOMContentLoaded', () => {
+            renderNodeStatuses(initialData.nodes);
+            renderDownloadStatus(initialData.download);
+            renderLogs(initialData.logs);
+
             refreshStatus();
             refreshLogs();
-            setInterval(refreshStatus, 5000);
+            setInterval(refreshStatus, 10000);
             setInterval(refreshLogs, 4000);
         });
     </script>
@@ -884,13 +1148,30 @@ HTML_TEMPLATE = """
 
 @app.before_request
 def _initialize_background_services():
+    # Ensure the status monitor thread is running; the event makes this idempotent.
     ensure_status_monitor_running()
 
 
 @app.route('/')
 def index():
-    """Serves the main HTML page."""
-    return render_template_string(HTML_TEMPLATE)
+    """Serves the main HTML page with the latest cached state."""
+    # Ensure background monitoring is running even if the app is reloaded.
+    ensure_status_monitor_running()
+
+    # Provide the most recent snapshots so the UI has immediate data
+    # before the periodic polling kicks in.
+    initial_nodes = get_node_status_snapshot()
+    initial_download = get_download_status_snapshot()
+    initial_logs = get_logs_snapshot(limit=250)
+
+    return render_template_string(
+        HTML_TEMPLATE,
+        initial_nodes=initial_nodes,
+        initial_download=initial_download,
+        initial_logs=initial_logs,
+        initial_server_time=datetime.now().isoformat(),
+    )
+
 
 
 @app.route('/api/status')
