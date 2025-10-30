@@ -882,7 +882,7 @@ HTML_TEMPLATE = """
 """
 
 
-@app.before_first_request
+@app.before_request
 def _initialize_background_services():
     ensure_status_monitor_running()
 
