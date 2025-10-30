@@ -10,9 +10,9 @@ from flask import Flask, render_template_string, request, redirect, url_for, fla
 # --- Configuration ---
 # !! IMPORTANT: Update this list with your Pi Nodes' static IP addresses !!
 PI_NODES = [
-    '192.168.1.101',
-    '192.168.1.102',
-    # '192.168.1.103',
+    '192.168.0.101',
+    '192.168.0.102',
+    '192.168.0.103',
 ]
 PORT = 9090  # Port specified in pi_node_listener.py
 DOWNLOAD_PATH_BASE = os.path.expanduser("~/video_downloads") # Local folder to save files
@@ -55,6 +55,41 @@ async def broadcast_command(command):
     tasks = [send_command(ip, command) for ip in PI_NODES]
     await asyncio.gather(*tasks)
     print("--- Broadcast complete ---")
+
+
+async def broadcast_shell_command(remote_command):
+    """Run a shell command on all nodes concurrently."""
+    tasks = [run_ssh_command(ip, remote_command) for ip in PI_NODES]
+    return await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def run_ssh_command(ip, remote_command):
+    """Execute a given shell command on a remote Pi via SSH."""
+    ssh_cmd = [
+        "ssh",
+        f"{REMOTE_PI_USER}@{ip}",
+        remote_command
+    ]
+    try:
+        print(f"[{datetime.now().isoformat()}] Running on {ip}: {remote_command}")
+        proc = await asyncio.create_subprocess_exec(
+            *ssh_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        if stdout:
+            print(f"[{datetime.now().isoformat()}] [{ip}] STDOUT: {stdout.decode('utf-8', errors='ignore')}")
+        if stderr:
+            print(f"[{datetime.now().isoformat()}] [{ip}] STDERR: {stderr.decode('utf-8', errors='ignore')}")
+        if proc.returncode == 0:
+            print(f"[{datetime.now().isoformat()}] [Success] Command succeeded on {ip}.")
+        else:
+            print(f"[{datetime.now().isoformat()}] [Error] Command failed on {ip} with exit code {proc.returncode}.")
+        return proc.returncode
+    except Exception as exc:
+        print(f"[{datetime.now().isoformat()}] [Error] SSH command failed for {ip}: {exc}")
+        return exc
 
 # --- Synchronous Download Function (to be run in a thread) ---
 
@@ -240,6 +275,18 @@ HTML_TEMPLATE = """
             margin-top: 1rem;
         }
         .btn-download:hover { background-color: #0069d9; }
+        .btn-delete {
+            background-color: #6c757d;
+            color: white;
+        }
+        .btn-delete:hover { background-color: #5a6268; }
+        .mark-form {
+            margin-top: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        .mark-form button {
+            width: 100%;
+        }
 
         /* Flash messages */
         .flash {
@@ -273,15 +320,23 @@ HTML_TEMPLATE = """
             <button type="submit" class="btn-start">START</button>
         </form>
 
+        <form action="{{ url_for('mark') }}" method="POST" class="mark-form">
+            <div class="form-group">
+                <label for="mark_note">Marker Note (optional)</label>
+                <input type="text" id="mark_note" name="mark_note" placeholder="Describe the marker (optional)">
+            </div>
+            <button type="submit" class="btn-mark">MARK</button>
+        </form>
+
         <div class="button-grid">
             <form action="{{ url_for('stop') }}" method="POST" style="margin:0;">
                 <button type="submit" class="btn-stop" style="width:100%;">STOP</button>
             </form>
-            <form action="{{ url_for('mark') }}" method="POST" style="margin:0;">
-                <button type="submit" class="btn-mark" style="width:100%;">MARK</button>
-            </form>
             <form action="{{ url_for('download') }}" method="POST" style="margin:0;">
                 <button type="submit" class="btn-download">DOWNLOAD & SORT FILES</button>
+            </form>
+            <form action="{{ url_for('wipe') }}" method="POST" style="margin:0;" onsubmit="return confirm('Delete all videos from every node? This cannot be undone.');">
+                <button type="submit" class="btn-delete" style="width:100%;">DELETE OLD RECORDINGS</button>
             </form>
         </div>
     </div>
@@ -323,8 +378,22 @@ def stop():
 @app.route('/mark', methods=['POST'])
 def mark():
     """Handles the MARK command."""
-    asyncio.run(broadcast_command('MARK'))
-    flash("Marker added.", "info")
+    raw_note = request.form.get('mark_note', '')
+    note = raw_note.replace('\r', ' ').replace('\n', ' ').strip()
+
+    if note and len(note) > 200:
+        # Trim overly long notes to fit comfortably in logs/commands
+        note = note[:200].rstrip()
+
+    if note:
+        command = f"MARK:{note}"
+        flash_message = f"Marker added: {note}"
+    else:
+        command = 'MARK'
+        flash_message = "Marker added."
+
+    asyncio.run(broadcast_command(command))
+    flash(flash_message, "info")
     return redirect(url_for('index'))
 
 @app.route('/download', methods=['POST'])
@@ -336,8 +405,29 @@ def download():
     flash("Download & Sort started in background. Files will be organized by take name.", "info")
     return redirect(url_for('index'))
 
+
+@app.route('/wipe', methods=['POST'])
+def wipe():
+    """Deletes recordings from all nodes."""
+    remote_command = f"rm -f {REMOTE_VIDEO_PATH}*.mp4 {REMOTE_VIDEO_PATH}*.txt"
+    results = asyncio.run(broadcast_shell_command(remote_command))
+
+    failures = []
+    for ip, result in zip(PI_NODES, results):
+        if isinstance(result, Exception):
+            failures.append(f"{ip}: {result}")
+        elif result != 0:
+            failures.append(f"{ip}: exit code {result}")
+
+    if failures:
+        fail_message = "; ".join(failures)
+        flash(f"Deletion completed with errors: {fail_message}", "info")
+    else:
+        flash("Old recordings deleted from all nodes.", "success")
+
+    return redirect(url_for('index'))
+
 if __name__ == "__main__":
     print("--- Starting Pi Multi-Cam Controller Web App ---")
     print(f"--- Access at: http://<your_control_pi_ip>:8080 ---")
     app.run(host='0.0.0.0', port=8080)
-

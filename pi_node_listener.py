@@ -227,7 +227,7 @@ def stop_recording():
                 log_file_handle = None
 
 
-def mark_timecode():
+def mark_timecode(note=None):
     """Writes a marker (current timestamp) to the log file."""
     if not log_file_handle or log_file_handle.closed:
         print(f"[{datetime.now().isoformat()}] [Warning] Cannot mark timecode, not recording or log is closed.")
@@ -235,9 +235,15 @@ def mark_timecode():
 
     try:
         marker_time = datetime.now().isoformat()
-        log_file_handle.write(f"MARK: {marker_time}\n")
+        entry = f"MARK: {marker_time}"
+        if note:
+            entry += f" | {note}"
+        log_file_handle.write(f"{entry}\n")
         log_file_handle.flush()  # Ensure it's written immediately
-        print(f"[{datetime.now().isoformat()}] [Info] Marked timecode: {marker_time}")
+        if note:
+            print(f"[{datetime.now().isoformat()}] [Info] Marked timecode: {marker_time} | {note}")
+        else:
+            print(f"[{datetime.now().isoformat()}] [Info] Marked timecode: {marker_time}")
 
     except Exception as e:
         print(f"[{datetime.now().isoformat()}] [Error] Failed to write marker: {e}")
@@ -285,9 +291,12 @@ def main():
                             print(f"[{datetime.now().isoformat()}] [Info] Received STOP command.")
                             stop_recording()
                             conn.sendall(b'ACK_STOP')
-                        elif command == 'MARK':
-                            print(f"[{datetime.now().isoformat()}] [Info] Received MARK command.")
-                            mark_timecode()
+                        elif command.startswith('MARK'):
+                            note = None
+                            if command.startswith('MARK:'):
+                                note = command.split(':', 1)[1].strip()
+                            print(f"[{datetime.now().isoformat()}] [Info] Received MARK command{f' with note: {note}' if note else '.'}")
+                            mark_timecode(note or None)
                             conn.sendall(b'ACK_MARK')
                         else:
                             print(f"[{datetime.now().isoformat()}] [Warning] Unknown command: {command}")
