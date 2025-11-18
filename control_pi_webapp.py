@@ -578,207 +578,212 @@ HTML_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Pi Multi-Cam Controller</title>
     <style>
-        body {
+        :root {
+            color-scheme: light;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            --bg: #f2f4f7;
+            --card-bg: #fff;
+            --card-border: #dde4f0;
+            --accent: #2563eb;
+            --accent-dark: #1d4ed8;
+            --success: #16a34a;
+            --danger: #dc2626;
+            --warning: #f97316;
+            --muted: #475569;
+        }
+        * {
+            box-sizing: border-box;
+        }
+        body {
             margin: 0;
             padding: 2rem 1rem 3rem;
-            background-color: #edf1f5;
-            color: #333;
+            background: var(--bg);
+            color: #111827;
             display: flex;
             justify-content: center;
         }
         .container {
             width: 100%;
-            max-width: 720px;
-            background: #ffffff;
-            border-radius: 16px;
-            box-shadow: 0 18px 45px rgba(14, 30, 37, 0.12);
-            padding: 2.5rem 2.25rem 2.75rem;
-            border: 1px solid #e4ebf2;
+            max-width: 960px;
+            background: var(--card-bg);
+            border-radius: 18px;
+            border: 1px solid var(--card-border);
+            box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+            padding: 2.5rem 2.5rem 3rem;
         }
         h1 {
+            margin: 0 0 2rem;
             text-align: center;
-            color: #111;
-            margin: 0 0 1.5rem;
+            font-size: 2rem;
         }
         h2 {
-            margin: 0 0 0.75rem;
+            margin: 0;
             font-size: 1.15rem;
-            color: #1f2937;
+            color: #0f172a;
         }
-        .form-group {
+        .flash {
+            padding: 0.9rem 1.1rem;
+            border-radius: 10px;
+            margin-bottom: 1rem;
+            font-weight: 600;
+        }
+        .flash-success { background: #d1fae5; color: #065f46; }
+        .flash-info { background: #dbeafe; color: #1e3a8a; }
+        .flash-warning { background: #fef3c7; color: #92400e; }
+        .flash-error { background: #fee2e2; color: #b91c1c; }
+        .grid-two {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 1.25rem;
             margin-bottom: 1.5rem;
+        }
+        .card {
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            background: var(--card-bg);
+            box-shadow: inset 0 0 0 0 rgba(0,0,0,0);
+        }
+        .card + .card {
+            margin-top: 0;
+        }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        .card-header p {
+            margin: 0;
+            color: var(--muted);
+            font-size: 0.9rem;
         }
         label {
             display: block;
-            margin-bottom: 0.5rem;
+            font-size: 0.9rem;
             font-weight: 600;
+            margin-bottom: 0.35rem;
         }
         input[type="text"] {
             width: 100%;
-            padding: 0.75rem;
-            border: 1px solid #ccc;
-            border-radius: 8px;
-            box-sizing: border-box;
+            border: 1px solid #cbd5f5;
+            border-radius: 10px;
+            padding: 0.75rem 0.9rem;
             font-size: 1rem;
         }
-        button,
-        .btn-link {
-            padding: 1rem;
-            font-size: 1rem;
-            font-weight: 700;
+        .form-control {
+            margin-bottom: 1rem;
+        }
+        .btn {
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            width: 100%;
+            border-radius: 10px;
+            font-weight: 600;
+            font-size: 0.95rem;
             border: none;
-            border-radius: 8px;
             cursor: pointer;
-            transition: all 0.2s ease;
-            display: inline-block;
-            text-align: center;
+            padding: 0.8rem 1rem;
+            transition: background 0.2s ease, transform 0.1s ease;
             text-decoration: none;
+            color: #fff;
         }
-        button:active {
+        .btn:active {
             transform: scale(0.98);
         }
-        .btn-start { background-color: #28a745; color: white; }
-        .btn-start:hover { background-color: #218838; }
-        .btn-stop { background-color: #dc3545; color: white; }
-        .btn-stop:hover { background-color: #c82333; }
-        .btn-mark { background-color: #ffc107; color: #212529; }
-        .btn-mark:hover { background-color: #e0a800; }
-        .btn-download {
-            background-color: #007bff;
-            color: white;
-            grid-column: 1 / -1;
-            margin-top: 1rem;
+        .btn-accent { background: var(--accent); }
+        .btn-accent:hover { background: var(--accent-dark); }
+        .btn-success { background: var(--success); }
+        .btn-success:hover { background: #15803d; }
+        .btn-warning { background: var(--warning); color: #fff; }
+        .btn-warning:hover { background: #ea580c; }
+        .btn-danger { background: var(--danger); }
+        .btn-danger:hover { background: #b91c1c; }
+        .btn-ghost {
+            border: 1px solid #cbd5f5;
+            background: transparent;
+            color: #0f172a;
         }
-        .btn-download:hover { background-color: #0069d9; }
-        .btn-delete {
-            background-color: #6c757d;
-            color: white;
+        .btn-ghost:hover {
+            background: #eef2ff;
         }
-        .btn-delete:hover { background-color: #5a6268; }
-        .btn-secondary {
-            background-color: #4c51bf;
-            color: white;
-            width: 100%;
-            margin-top: 1rem;
-        }
-        .btn-secondary:hover {
-            background-color: #3730a3;
-            color: white;
-            text-decoration: none;
-        }
-        .mark-form {
-            margin-top: 1.5rem;
-            margin-bottom: 1.5rem;
-        }
-        .mark-form button {
-            width: 100%;
-        }
-        .button-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 1rem;
-            margin-top: 1.5rem;
-        }
-        .flash {
-            padding: 1rem;
-            margin-bottom: 1.5rem;
-            border-radius: 8px;
-            text-align: center;
-            font-weight: 600;
-        }
-        .flash-success { background-color: #d4edda; color: #155724; }
-        .flash-info { background-color: #d1ecf1; color: #0c5460; }
-        .status-section {
-            margin-bottom: 1.75rem;
-        }
-        .node-summary {
-            margin-bottom: 1.25rem;
-            overflow-x: auto;
+        .actions-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
         }
         .node-table {
             width: 100%;
             border-collapse: collapse;
-            min-width: 620px;
+            margin-top: 1rem;
         }
-        .node-table thead th {
-            font-size: 0.78rem;
-            font-weight: 700;
+        .node-table th,
+        .node-table td {
+            padding: 0.65rem 0.75rem;
+            border-bottom: 1px solid #eceff7;
+            text-align: left;
+        }
+        .node-table th {
+            font-size: 0.8rem;
             text-transform: uppercase;
             letter-spacing: 0.08em;
-            color: #4a5568;
-            border-bottom: 2px solid #e3e9ef;
-            padding: 0.55rem 0.75rem;
-            background: #f8fafc;
+            color: var(--muted);
         }
         .node-table tbody td {
-            padding: 0.6rem 0.75rem;
-            border-bottom: 1px solid #eef2f7;
             font-size: 0.9rem;
-            color: #1e293b;
-        }
-        .node-table tbody tr:last-child td {
-            border-bottom: none;
         }
         .node-table .status-pill {
-            padding: 0.2rem 0.6rem;
             font-size: 0.7rem;
-        }
-        .node-table .empty-row td {
-            text-align: center;
-            font-size: 0.9rem;
-            color: #475569;
-        }
-        .download-status {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            flex-wrap: wrap;
-            background: #f9fbfc;
-            border-radius: 12px;
-            border: 1px solid #e3e9ef;
-            padding: 0.85rem 1.1rem;
+            border-radius: 999px;
+            padding: 0.2rem 0.6rem;
         }
         .status-pill {
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            padding: 0.35rem 0.85rem;
-            border-radius: 999px;
-            font-weight: 700;
-            font-size: 0.75rem;
+            font-weight: 600;
             letter-spacing: 0.06em;
             text-transform: uppercase;
-            background: #cbd5f5;
-            color: #0f172a;
+            padding: 0.35rem 0.75rem;
+            border-radius: 999px;
         }
-        .status-pill.status-running { background: #007bff; color: #fff; }
-        .status-pill.status-success { background: #28a745; color: #fff; }
-        .status-pill.status-warning { background: #ffc107; color: #212529; }
-        .status-pill.status-error { background: #dc3545; color: #fff; }
-        .status-pill.status-idle { background: #6c757d; color: #fff; }
+        .status-pill.status-running { background: #dbeafe; color: #1d4ed8; }
+        .status-pill.status-success { background: #dcfce7; color: #15803d; }
+        .status-pill.status-warning { background: #fef3c7; color: #92400e; }
+        .status-pill.status-error { background: #fee2e2; color: #b91c1c; }
+        .status-pill.status-idle { background: #e2e8f0; color: #334155; }
         .status-pill.status-online { background: #dcfce7; color: #166534; }
         .status-pill.status-recording { background: #fee2e2; color: #b91c1c; }
         .status-pill.status-offline { background: #e2e8f0; color: #475569; }
-        .download-message {
-            font-size: 0.9rem;
-            color: #1e293b;
+        .download-status {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
         }
-        .preview-links {
+        .download-message {
+            font-size: 0.95rem;
+            color: #0f172a;
+        }
+        .link-list {
             list-style: none;
-            padding-left: 1rem;
-            margin: 0;
+            padding: 0;
+            margin: 1rem 0 0;
             display: flex;
             flex-direction: column;
-            gap: 0.5rem;
+            gap: 0.65rem;
         }
-        .preview-links a {
+        .link-list a {
             text-decoration: none;
-            color: #0f62fe;
+            color: var(--accent);
             font-weight: 600;
         }
-        .preview-links a:hover {
+        .link-list a:hover {
+            color: var(--accent-dark);
             text-decoration: underline;
+        }
+        .section-title {
+            margin-bottom: 0.35rem;
         }
     </style>
 </head>
@@ -794,37 +799,53 @@ HTML_TEMPLATE = """
           {% endif %}
         {% endwith %}
 
-        <form action="{{ url_for('start') }}" method="POST">
-            <div class="form-group">
-                <label for="take_name">Take Name</label>
-                <input type="text" id="take_name" name="take_name" placeholder="e.g., test1_no_wind" required>
+        <div class="grid-two">
+            <div class="card">
+                <div class="card-header">
+                    <h2>Take Controls</h2>
+                    <p>Start new takes and drop markers.</p>
+                </div>
+                <form action="{{ url_for('start') }}" method="POST">
+                    <div class="form-control">
+                        <label for="take_name">Take Name</label>
+                        <input type="text" id="take_name" name="take_name" placeholder="e.g., test1_no_wind" required>
+                    </div>
+                    <button type="submit" class="btn btn-success">Start Recording</button>
+                </form>
+                <form action="{{ url_for('stop') }}" method="POST" style="margin-top:0.75rem;">
+                    <button type="submit" class="btn btn-danger">Stop Recording</button>
+                </form>
+                <form action="{{ url_for('mark') }}" method="POST" style="margin-top:1rem;">
+                    <div class="form-control">
+                        <label for="mark_note">Marker Note (optional)</label>
+                        <input type="text" id="mark_note" name="mark_note" placeholder="Describe the marker (optional)">
+                    </div>
+                    <button type="submit" class="btn btn-warning">Add Marker</button>
+                </form>
             </div>
-            <button type="submit" class="btn-start">START</button>
-        </form>
 
-        <form action="{{ url_for('mark') }}" method="POST" class="mark-form">
-            <div class="form-group">
-                <label for="mark_note">Marker Note (optional)</label>
-                <input type="text" id="mark_note" name="mark_note" placeholder="Describe the marker (optional)">
+            <div class="card">
+                <div class="card-header">
+                    <h2>System Actions</h2>
+                    <p>Control all camera nodes at once.</p>
+                </div>
+                <div class="actions-list">
+                    <form action="{{ url_for('download') }}" method="POST">
+                        <button type="submit" class="btn btn-accent">Download & Sort Files</button>
+                    </form>
+                    <form action="{{ url_for('wipe') }}" method="POST" onsubmit="return confirm('Delete all videos from every node? This cannot be undone.');">
+                        <button type="submit" class="btn btn-ghost">Delete Old Recordings</button>
+                    </form>
+                    <a href="{{ url_for('takes_index') }}" class="btn btn-ghost">Manage Downloaded Takes</a>
+                </div>
             </div>
-            <button type="submit" class="btn-mark">MARK</button>
-        </form>
-
-        <div class="button-grid">
-            <form action="{{ url_for('stop') }}" method="POST" style="margin:0;">
-                <button type="submit" class="btn-stop" style="width:100%;">STOP</button>
-            </form>
-            <form action="{{ url_for('download') }}" method="POST" style="margin:0;">
-                <button type="submit" class="btn-download">DOWNLOAD & SORT FILES</button>
-            </form>
-            <form action="{{ url_for('wipe') }}" method="POST" style="margin:0;" onsubmit="return confirm('Delete all videos from every node? This cannot be undone.');">
-                <button type="submit" class="btn-delete" style="width:100%;">DELETE OLD RECORDINGS</button>
-            </form>
         </div>
-        <a href="{{ url_for('takes_index') }}" class="btn-secondary">VIEW DOWNLOADED TAKES</a>
 
-        <div class="status-section">
-            <h2>Node Status Summary</h2>
+        <div class="card">
+            <div class="card-header">
+                <h2>Node Status</h2>
+                <p>Live snapshot of each Pi node.</p>
+            </div>
             <div class="node-summary">
                 <table class="node-table" aria-describedby="node-status-table-body">
                     <thead>
@@ -881,10 +902,13 @@ HTML_TEMPLATE = """
             </div>
         </div>
 
-        <div class="status-section">
-            <h2>Live View Links</h2>
+        <div class="card">
+            <div class="card-header">
+                <h2>Live View Links</h2>
+                <p>Open each node’s low-res preview.</p>
+            </div>
             {% if preview_nodes %}
-                <ul class="preview-links">
+                <ul class="link-list">
                     {% for ip in preview_nodes %}
                         <li>
                             <a href="http://{{ ip }}:{{ preview_port }}/preview.mjpg" target="_blank" rel="noopener noreferrer">
@@ -898,8 +922,11 @@ HTML_TEMPLATE = """
             {% endif %}
         </div>
 
-        <div class="status-section">
-            <h2>Download Status</h2>
+        <div class="card">
+            <div class="card-header">
+                <h2>Download Status</h2>
+                <p>Background progress from the Control Pi.</p>
+            </div>
             <div id="download-status" class="download-status">
                 <span class="status-pill status-idle">IDLE</span>
                 <span class="download-message">No downloads in progress.</span>
