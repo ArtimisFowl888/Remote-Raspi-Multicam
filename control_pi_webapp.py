@@ -9,23 +9,25 @@ import time
 import re
 import shutil
 import sys
+import tempfile
 from collections import deque
 from dataclasses import dataclass, asdict
 from datetime import datetime
-from typing import Dict, Tuple
-from flask import Flask, render_template_string, request, redirect, url_for, flash, jsonify
+from typing import Dict, Optional, Tuple
+from flask import Flask, render_template_string, request, redirect, url_for, flash, jsonify, send_file, after_this_request
 
 # --- Configuration ---
 # !! IMPORTANT: Update this list with your Pi Nodes' static IP addresses !!
 PI_NODES = [
-    '192.168.0.101',
-    '192.168.0.102',
-    '192.168.0.103',
+    '192.168.1.101',
+    '192.168.1.104',
+    '192.168.1.103',
 ]
 PORT = 9090  # Port specified in pi_node_listener.py
 DOWNLOAD_PATH_BASE = os.path.expanduser("~/video_downloads") # Local folder to save files
 REMOTE_VIDEO_PATH = "/home/pi/videos/"  # Path on the Pi Nodes
 REMOTE_PI_USER = "pi"  # Username on the Pi Nodes
+NODE_PREVIEW_PORT = 8081  # Preview HTTP server running on each node
 # ---------------------
 
 app = Flask(__name__)
@@ -77,6 +79,7 @@ class NodeStatus:
     last_command: str = ""
     last_updated: float = 0.0
     last_heartbeat: float = 0.0
+    cpu_temp_c: Optional[float] = None
 
     def to_dict(self) -> Dict:
         last_updated_iso = (
@@ -102,6 +105,7 @@ class NodeStatus:
             "last_updated": last_updated_iso,
             "last_heartbeat": last_heartbeat_iso,
             "heartbeat_age": heartbeat_age,
+            "cpu_temp_c": self.cpu_temp_c,
         }
 
 
@@ -252,6 +256,63 @@ def get_download_status_snapshot() -> Dict:
         return dict(download_status)
 
 
+def compute_directory_size(path: str) -> int:
+    total = 0
+    for root, _, files in os.walk(path):
+        for fname in files:
+            fpath = os.path.join(root, fname)
+            try:
+                total += os.path.getsize(fpath)
+            except OSError:
+                continue
+    return total
+
+
+def human_readable_size(num_bytes: int) -> str:
+    if num_bytes <= 0:
+        return "0 B"
+    units = ['B', 'KB', 'MB', 'GB', 'TB']
+    value = float(num_bytes)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            return f"{value:.2f} {unit}"
+        value /= 1024
+
+
+def list_take_directories() -> list:
+    """Enumerate all take directories sorted by most recent."""
+    takes = []
+    if not os.path.isdir(DOWNLOAD_PATH_BASE):
+        return takes
+
+    base_path = os.path.abspath(DOWNLOAD_PATH_BASE)
+    try:
+        entries = os.listdir(base_path)
+    except OSError:
+        return takes
+
+    for entry in entries:
+        full_path = os.path.join(base_path, entry)
+        if not os.path.isdir(full_path):
+            continue
+        try:
+            mtime = os.path.getmtime(full_path)
+        except OSError:
+            continue
+        size_bytes = compute_directory_size(full_path)
+        takes.append({
+            "name": entry,
+            "path": full_path,
+            "modified_epoch": mtime,
+            "modified_display": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S"),
+            "size_display": human_readable_size(size_bytes),
+            "size_bytes": size_bytes,
+        })
+
+    takes.sort(key=lambda item: item["modified_epoch"], reverse=True)
+    return takes
+
+
 def get_logs_snapshot(limit: int = 300):
     with LOG_LOCK:
         if not LOG_BUFFER:
@@ -307,6 +368,13 @@ async def send_command(ip, command, silent: bool = False):
                 except json.JSONDecodeError:
                     print(f"[{datetime.now().isoformat()}] [Warning] Could not decode STATUS payload from {ip}: {payload}")
             heartbeat_time = time.time()
+            cpu_temp_value = status_data.get('cpu_temp_c')
+            cpu_temp_c = None
+            if cpu_temp_value is not None:
+                try:
+                    cpu_temp_c = float(cpu_temp_value)
+                except (TypeError, ValueError):
+                    cpu_temp_c = None
             update_node_status(
                 ip,
                 recording=bool(status_data.get('recording', False)),
@@ -314,6 +382,7 @@ async def send_command(ip, command, silent: bool = False):
                 last_error=status_data.get('last_error', ''),
                 last_response=response_text,
                 last_heartbeat=heartbeat_time,
+                cpu_temp_c=cpu_temp_c,
             )
         else:
             # Keep reachable flag on any successful response
@@ -553,7 +622,8 @@ HTML_TEMPLATE = """
             box-sizing: border-box;
             font-size: 1rem;
         }
-        button {
+        button,
+        .btn-link {
             padding: 1rem;
             font-size: 1rem;
             font-weight: 700;
@@ -561,6 +631,9 @@ HTML_TEMPLATE = """
             border-radius: 8px;
             cursor: pointer;
             transition: all 0.2s ease;
+            display: inline-block;
+            text-align: center;
+            text-decoration: none;
         }
         button:active {
             transform: scale(0.98);
@@ -583,6 +656,17 @@ HTML_TEMPLATE = """
             color: white;
         }
         .btn-delete:hover { background-color: #5a6268; }
+        .btn-secondary {
+            background-color: #4c51bf;
+            color: white;
+            width: 100%;
+            margin-top: 1rem;
+        }
+        .btn-secondary:hover {
+            background-color: #3730a3;
+            color: white;
+            text-decoration: none;
+        }
         .mark-form {
             margin-top: 1.5rem;
             margin-bottom: 1.5rem;
@@ -680,17 +764,21 @@ HTML_TEMPLATE = """
             font-size: 0.9rem;
             color: #1e293b;
         }
-        .log-window {
-            background-color: #1b1d21;
-            color: #e5e7eb;
-            padding: 1rem;
-            border-radius: 12px;
-            border: 1px solid #2f3136;
-            max-height: 220px;
-            overflow-y: auto;
-            font-family: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-            font-size: 0.85rem;
+        .preview-links {
+            list-style: none;
+            padding-left: 1rem;
             margin: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        .preview-links a {
+            text-decoration: none;
+            color: #0f62fe;
+            font-weight: 600;
+        }
+        .preview-links a:hover {
+            text-decoration: underline;
         }
     </style>
 </head>
@@ -705,19 +793,6 @@ HTML_TEMPLATE = """
             {% endfor %}
           {% endif %}
         {% endwith %}
-
-        <div class="status-section">
-            <h2>Download Status</h2>
-            <div id="download-status" class="download-status">
-                <span class="status-pill status-idle">IDLE</span>
-                <span class="download-message">No downloads in progress.</span>
-            </div>
-        </div>
-
-        <div class="status-section">
-            <h2>Activity Log</h2>
-            <pre id="log-window" class="log-window" aria-live="polite">Waiting for log output...</pre>
-        </div>
 
         <form action="{{ url_for('start') }}" method="POST">
             <div class="form-group">
@@ -746,6 +821,7 @@ HTML_TEMPLATE = """
                 <button type="submit" class="btn-delete" style="width:100%;">DELETE OLD RECORDINGS</button>
             </form>
         </div>
+        <a href="{{ url_for('takes_index') }}" class="btn-secondary">VIEW DOWNLOADED TAKES</a>
 
         <div class="status-section">
             <h2>Node Status Summary</h2>
@@ -758,6 +834,7 @@ HTML_TEMPLATE = """
                             <th scope="col">Recording</th>
                             <th scope="col">Take</th>
                             <th scope="col">Heartbeat</th>
+                            <th scope="col">CPU Temp</th>
                             <th scope="col">Last Cmd</th>
                             <th scope="col">Last Error</th>
                         </tr>
@@ -789,17 +866,43 @@ HTML_TEMPLATE = """
                                     <td>{{ 'Yes' if recording else 'No' }}</td>
                                     <td>{{ node.take_name or '--' }}</td>
                                     <td>{{ node.last_heartbeat or '--' }}</td>
+                                    <td>{{ ('%.1f C' % node.cpu_temp_c) if node.cpu_temp_c is not none else '--' }}</td>
                                     <td>{{ node.last_command or '--' }}</td>
                                     <td>{{ node.last_error or '--' }}</td>
                                 </tr>
                             {% endfor %}
                         {% else %}
                             <tr class="empty-row">
-                                <td colspan="7">Waiting for heartbeat...</td>
+                                <td colspan="8">Waiting for heartbeat...</td>
                             </tr>
                         {% endif %}
                     </tbody>
                 </table>
+            </div>
+        </div>
+
+        <div class="status-section">
+            <h2>Live View Links</h2>
+            {% if preview_nodes %}
+                <ul class="preview-links">
+                    {% for ip in preview_nodes %}
+                        <li>
+                            <a href="http://{{ ip }}:{{ preview_port }}/preview.mjpg" target="_blank" rel="noopener noreferrer">
+                                {{ ip }} – Open Live View
+                            </a>
+                        </li>
+                    {% endfor %}
+                </ul>
+            {% else %}
+                <p class="empty-row">No nodes configured. Update PI_NODES to enable preview links.</p>
+            {% endif %}
+        </div>
+
+        <div class="status-section">
+            <h2>Download Status</h2>
+            <div id="download-status" class="download-status">
+                <span class="status-pill status-idle">IDLE</span>
+                <span class="download-message">No downloads in progress.</span>
             </div>
         </div>
     </div>
@@ -807,13 +910,14 @@ HTML_TEMPLATE = """
         const initialData = {
             nodes: {{ initial_nodes | tojson }},
             download: {{ initial_download | tojson }},
-            logs: {{ initial_logs | tojson }},
             serverTime: {{ initial_server_time | tojson }}
         };
 
         const nodeStatusTableBody = document.getElementById('node-status-table-body');
         const downloadStatusEl = document.getElementById('download-status');
-        const logWindow = document.getElementById('log-window');
+
+        let statusRequestInFlight = false;
+        let downloadRefreshTimeoutId = null;
 
         const stateLabels = {
             online: 'Online',
@@ -833,6 +937,17 @@ HTML_TEMPLATE = """
                 return 'online';
             }
             return 'offline';
+        }
+
+        function formatCpuTempValue(node) {
+            if (!node || node.cpu_temp_c === undefined || node.cpu_temp_c === null) {
+                return '--';
+            }
+            const numericValue = Number(node.cpu_temp_c);
+            if (!Number.isFinite(numericValue)) {
+                return '--';
+            }
+            return `${numericValue.toFixed(1)} C`;
         }
 
         function escapeHtml(value) {
@@ -883,7 +998,7 @@ HTML_TEMPLATE = """
             if (!entries.length) {
                 const emptyRow = document.createElement('tr');
                 emptyRow.className = 'empty-row';
-                emptyRow.innerHTML = '<td colspan="7">No nodes configured.</td>';
+                emptyRow.innerHTML = '<td colspan="8">No nodes configured.</td>';
                 nodeStatusTableBody.appendChild(emptyRow);
                 return;
             }
@@ -894,6 +1009,7 @@ HTML_TEMPLATE = """
                 const takeDisplay = node.take_name || '--';
                 const recordingLabel = node.recording ? 'Yes' : 'No';
                 const heartbeatDisplay = formatRelativeTime(node.last_heartbeat);
+                const cpuTempDisplay = formatCpuTempValue(node);
                 const lastCommand = node.last_command ? node.last_command : '--';
                 const lastError = node.last_error ? node.last_error : '--';
                 row.innerHTML = `
@@ -902,11 +1018,24 @@ HTML_TEMPLATE = """
                     <td>${escapeHtml(recordingLabel)}</td>
                     <td>${escapeHtml(takeDisplay)}</td>
                     <td>${escapeHtml(heartbeatDisplay)}</td>
+                    <td>${escapeHtml(cpuTempDisplay)}</td>
                     <td>${escapeHtml(lastCommand)}</td>
                     <td>${escapeHtml(lastError)}</td>
                 `;
                 nodeStatusTableBody.appendChild(row);
             });
+        }
+
+        function scheduleDownloadRefresh(active) {
+            if (downloadRefreshTimeoutId) {
+                clearTimeout(downloadRefreshTimeoutId);
+                downloadRefreshTimeoutId = null;
+            }
+            if (active) {
+                downloadRefreshTimeoutId = setTimeout(() => {
+                    refreshStatus();
+                }, 2500);
+            }
         }
 
         function renderDownloadStatus(download) {
@@ -922,29 +1051,18 @@ HTML_TEMPLATE = """
             `;
             if (download && download.last_updated) {
                 downloadStatusEl.title = `Last updated ${download.last_updated}`;
+            } else {
+                downloadStatusEl.removeAttribute('title');
             }
-        }
-
-        function renderLogs(logEntries) {
-            if (!logWindow) {
-                return;
-            }
-            if (!logEntries || !logEntries.length) {
-                logWindow.textContent = 'No log entries yet.';
-                return;
-            }
-            const nearBottom = (logWindow.scrollTop + logWindow.clientHeight + 40) >= logWindow.scrollHeight;
-            const lines = logEntries.map((entry) => {
-                const timestamp = entry.timestamp ? `[${entry.timestamp}] ` : '';
-                return `${timestamp}${entry.message}`;
-            });
-            logWindow.textContent = lines.join('\n');
-            if (nearBottom) {
-                logWindow.scrollTop = logWindow.scrollHeight;
-            }
+            const isActive = Boolean(download && download.in_progress);
+            scheduleDownloadRefresh(isActive);
         }
 
         async function refreshStatus() {
+            if (statusRequestInFlight) {
+                return;
+            }
+            statusRequestInFlight = true;
             try {
                 const response = await fetch('/api/status', { cache: 'no-store' });
                 if (!response.ok) {
@@ -955,33 +1073,146 @@ HTML_TEMPLATE = """
                 renderDownloadStatus(data.download);
             } catch (error) {
                 console.warn('Failed to refresh status', error);
-            }
-        }
-
-        async function refreshLogs() {
-            try {
-                const response = await fetch('/api/logs?limit=250', { cache: 'no-store' });
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
-                }
-                const data = await response.json();
-                renderLogs(data.logs);
-            } catch (error) {
-                console.warn('Failed to refresh logs', error);
+            } finally {
+                statusRequestInFlight = false;
             }
         }
 
         document.addEventListener('DOMContentLoaded', () => {
             renderNodeStatusTable(initialData.nodes);
             renderDownloadStatus(initialData.download);
-            renderLogs(initialData.logs);
 
             refreshStatus();
-            refreshLogs();
             setInterval(refreshStatus, 10000);
-            setInterval(refreshLogs, 4000);
         });
     </script>
+</body>
+</html>
+"""
+
+TAKES_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Downloaded Takes</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            margin: 0;
+            padding: 2rem 1rem 3rem;
+            background-color: #edf1f5;
+            color: #333;
+            display: flex;
+            justify-content: center;
+        }
+        .container {
+            width: 100%;
+            max-width: 900px;
+            background: #ffffff;
+            border-radius: 16px;
+            box-shadow: 0 18px 45px rgba(14, 30, 37, 0.12);
+            padding: 2.5rem 2.25rem 2.75rem;
+            border: 1px solid #e4ebf2;
+        }
+        h1 {
+            margin-top: 0;
+            text-align: center;
+        }
+        .take-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1.5rem;
+        }
+        .take-table th,
+        .take-table td {
+            padding: 0.75rem 0.9rem;
+            border-bottom: 1px solid #e5e7eb;
+            text-align: left;
+        }
+        .take-table th {
+            text-transform: uppercase;
+            font-size: 0.8rem;
+            letter-spacing: 0.08em;
+            color: #475569;
+            background: #f8fafc;
+        }
+        .actions form {
+            margin: 0;
+        }
+        .btn-primary {
+            background-color: #007bff;
+            color: white;
+            padding: 0.65rem 1.1rem;
+            border-radius: 8px;
+            font-weight: 600;
+            border: none;
+            cursor: pointer;
+        }
+        .btn-primary:hover {
+            background-color: #0062cc;
+        }
+        .header-actions {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+        .back-link {
+            color: #007bff;
+            text-decoration: none;
+            font-weight: 600;
+        }
+        .back-link:hover {
+            text-decoration: underline;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 2rem 1rem;
+            color: #475569;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header-actions">
+            <h1>Downloaded Takes</h1>
+            <a href="{{ url_for('index') }}" class="back-link">&larr; Back to Controller</a>
+        </div>
+
+        {% if takes %}
+            <table class="take-table">
+                <thead>
+                    <tr>
+                        <th>Take</th>
+                        <th>Last Modified</th>
+                        <th>Total Size</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for take in takes %}
+                        <tr>
+                            <td>{{ take.name }}</td>
+                            <td>{{ take.modified_display }}</td>
+                            <td>{{ take.size_display }}</td>
+                            <td class="actions">
+                                <form action="{{ url_for('download_take_archive', take_name=take.name) }}" method="POST">
+                                    <button type="submit" class="btn-primary">Download ZIP</button>
+                                </form>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        {% else %}
+            <div class="empty-state">
+                <p>No takes have been downloaded yet.</p>
+            </div>
+        {% endif %}
+    </div>
 </body>
 </html>
 """
@@ -1003,16 +1234,26 @@ def index():
     # before the periodic polling kicks in.
     initial_nodes = get_node_status_snapshot()
     initial_download = get_download_status_snapshot()
-    initial_logs = get_logs_snapshot(limit=250)
 
     return render_template_string(
         HTML_TEMPLATE,
         initial_nodes=initial_nodes,
         initial_download=initial_download,
-        initial_logs=initial_logs,
         initial_server_time=datetime.now().isoformat(),
+        preview_nodes=PI_NODES,
+        preview_port=NODE_PREVIEW_PORT,
     )
 
+
+
+@app.route('/takes')
+def takes_index():
+    """List downloaded takes on the Control Pi."""
+    takes = list_take_directories()
+    return render_template_string(
+        TAKES_TEMPLATE,
+        takes=takes,
+    )
 
 
 @app.route('/api/status')
@@ -1032,6 +1273,7 @@ def api_logs():
     return jsonify({
         "logs": get_logs_snapshot(limit)
     })
+
 
 @app.route('/start', methods=['POST'])
 def start():
@@ -1082,10 +1324,50 @@ def mark():
 def download():
     """Handles the DOWNLOAD command by starting a background thread."""
     print(f"[{datetime.now().isoformat()}] [Info] Download request received. Starting background thread.")
+    update_download_status('running', 'Preparing download & sort...', in_progress=True)
     # Run the download in a separate thread so it doesn't block the web server
     threading.Thread(target=download_files_threaded, daemon=True).start()
     flash("Download & Sort started in background. Files will be organized by take name.", "info")
     return redirect(url_for('index'))
+
+
+@app.route('/takes/<path:take_name>/download', methods=['POST'])
+def download_take_archive(take_name):
+    """Bundle the specified take directory into a zip archive and send it to the user."""
+    safe_name = take_name.strip()
+    if not safe_name:
+        flash("Invalid take name.", "error")
+        return redirect(url_for('takes_index'))
+
+    base_dir = os.path.abspath(DOWNLOAD_PATH_BASE)
+    take_path = os.path.abspath(os.path.join(base_dir, safe_name))
+    if not take_path.startswith(base_dir) or not os.path.isdir(take_path):
+        flash("Take not found on controller.", "warning")
+        return redirect(url_for('takes_index'))
+
+    temp_dir = tempfile.mkdtemp(prefix="take_archive_")
+
+    try:
+        archive_base = os.path.join(temp_dir, safe_name)
+        archive_path = shutil.make_archive(archive_base, 'zip', root_dir=take_path)
+    except Exception as exc:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        flash(f"Failed to prepare archive: {exc}", "error")
+        return redirect(url_for('takes_index'))
+
+    filename = os.path.basename(archive_path)
+
+    @after_this_request
+    def cleanup(response):
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        return response
+
+    return send_file(
+        archive_path,
+        as_attachment=True,
+        download_name=filename,
+        mimetype='application/zip'
+    )
 
 
 @app.route('/wipe', methods=['POST'])
