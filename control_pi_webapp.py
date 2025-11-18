@@ -256,16 +256,27 @@ def get_download_status_snapshot() -> Dict:
         return dict(download_status)
 
 
-def compute_directory_size(path: str) -> int:
+def compute_directory_stats(path: str) -> Tuple[int, float]:
+    """Return (total_size_bytes, latest_modified_epoch) for the directory tree."""
     total = 0
+    latest = 0.0
     for root, _, files in os.walk(path):
+        try:
+            latest = max(latest, os.path.getmtime(root))
+        except OSError:
+            pass
         for fname in files:
             fpath = os.path.join(root, fname)
             try:
                 total += os.path.getsize(fpath)
+                latest = max(latest, os.path.getmtime(fpath))
             except OSError:
                 continue
-    return total
+    try:
+        latest = max(latest, os.path.getmtime(path))
+    except OSError:
+        pass
+    return total, latest
 
 
 def human_readable_size(num_bytes: int) -> str:
@@ -295,22 +306,56 @@ def list_take_directories() -> list:
         full_path = os.path.join(base_path, entry)
         if not os.path.isdir(full_path):
             continue
-        try:
-            mtime = os.path.getmtime(full_path)
-        except OSError:
-            continue
-        size_bytes = compute_directory_size(full_path)
+        size_bytes, latest_epoch = compute_directory_stats(full_path)
         takes.append({
             "name": entry,
             "path": full_path,
-            "modified_epoch": mtime,
-            "modified_display": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S"),
+            "modified_epoch": latest_epoch,
+            "modified_display": datetime.fromtimestamp(latest_epoch).strftime("%Y-%m-%d %H:%M:%S"),
             "size_display": human_readable_size(size_bytes),
             "size_bytes": size_bytes,
         })
 
     takes.sort(key=lambda item: item["modified_epoch"], reverse=True)
     return takes
+
+
+def ensure_take_archive(take_name: str, take_path: str) -> Optional[str]:
+    """Ensure a cached ZIP archive exists for the take and return its path."""
+    base_dir = os.path.abspath(DOWNLOAD_PATH_BASE)
+    archive_path = os.path.abspath(os.path.join(base_dir, f"{take_name}.zip"))
+
+    if not archive_path.startswith(base_dir):
+        return None
+
+    _, latest_epoch = compute_directory_stats(take_path)
+    archive_mtime = -1.0
+    if os.path.isfile(archive_path):
+        try:
+            archive_mtime = os.path.getmtime(archive_path)
+        except OSError:
+            archive_mtime = -1.0
+
+    if archive_mtime >= latest_epoch > 0:
+        return archive_path
+
+    temp_dir = tempfile.mkdtemp(prefix="take_archive_")
+    try:
+        temp_base = os.path.join(temp_dir, take_name)
+        shutil.make_archive(temp_base, 'zip', root_dir=take_path)
+        temp_zip_path = f"{temp_base}.zip"
+        shutil.move(temp_zip_path, archive_path)
+        try:
+            os.utime(archive_path, (latest_epoch, latest_epoch))
+        except OSError:
+            pass
+    except Exception:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    return archive_path
 
 
 def get_logs_snapshot(limit: int = 300):
@@ -1372,27 +1417,20 @@ def download_take_archive(take_name):
         flash("Take not found on controller.", "warning")
         return redirect(url_for('takes_index'))
 
-    temp_dir = tempfile.mkdtemp(prefix="take_archive_")
-
     try:
-        archive_base = os.path.join(temp_dir, safe_name)
-        archive_path = shutil.make_archive(archive_base, 'zip', root_dir=take_path)
+        archive_path = ensure_take_archive(safe_name, take_path)
     except Exception as exc:
-        shutil.rmtree(temp_dir, ignore_errors=True)
         flash(f"Failed to prepare archive: {exc}", "error")
         return redirect(url_for('takes_index'))
 
-    filename = os.path.basename(archive_path)
-
-    @after_this_request
-    def cleanup(response):
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        return response
+    if not archive_path or not os.path.isfile(archive_path):
+        flash("Archive could not be created.", "error")
+        return redirect(url_for('takes_index'))
 
     return send_file(
         archive_path,
         as_attachment=True,
-        download_name=filename,
+        download_name=os.path.basename(archive_path),
         mimetype='application/zip'
     )
 
