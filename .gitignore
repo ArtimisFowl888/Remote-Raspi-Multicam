@@ -209,3 +209,5 @@ __marimo__/
 *.h264
 *_markers.txt
 *.jpg
+*.xml
+*.xmp
