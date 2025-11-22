@@ -21,14 +21,20 @@ This tool processes video takes recorded by the Pi Multicam system for use in Ad
 python process_takes.py "C:\path\to\video_downloads"
 ```
 
-or for the test videos:
+### Options
 
+*   `--burn`: Hard-code the text overlay into the video files. Requires FFmpeg.
+*   `--position [bottom|top|top-left|...]`: Set the position of the burned text. Default is `bottom`.
+
+Example:
 ```bash
-python process_takes.py Test_videos
+python process_takes.py Test_videos --burn --position top-left
 ```
 
 ## Output
 *   **Sidecar Files**: `filename.xmp` created next to each video file.
+*   **Subtitle Files**: `filename.srt` created next to each video file (contains telemetry overlay).
+*   **Burned Videos**: `filename_burned.mp4` (if `--burn` is used).
 *   **XML Sequence**: `take_name.xml` created in each take folder.
 
 ## Importing into Premiere Pro

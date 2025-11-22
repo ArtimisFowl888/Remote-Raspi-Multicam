@@ -4,6 +4,7 @@ import glob
 import re
 import datetime
 import argparse
+import subprocess
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 
@@ -21,15 +22,9 @@ def parse_timestamp(ts_str):
 
 def get_video_duration(file_path):
     """
-    Estimates video duration. 
-    Since we don't want external dependencies like ffprobe if possible, 
-    and we know the segment time from the project (default 20 mins),
-    we might need a way to get this. 
-    
-    However, for accurate XML, we really need the duration.
-    For now, I will try to use 'ffprobe' if available, otherwise default to a placeholder.
+    Estimates video duration using ffprobe.
+    Defaults to 10.0 if not found.
     """
-    import subprocess
     try:
         result = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", file_path],
@@ -39,18 +34,24 @@ def get_video_duration(file_path):
         )
         return float(result.stdout.strip())
     except Exception:
-        print(f"Warning: Could not get duration for {file_path} (ffprobe not found?). Using default 10s.")
+        # print(f"Warning: Could not get duration for {file_path} (ffprobe not found?). Using default 10s.")
         return 10.0
+
+def format_srt_time(td):
+    """Formats a timedelta as HH:MM:SS,mmm for SRT."""
+    total_seconds = int(td.total_seconds())
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    milliseconds = int(td.microseconds / 1000)
+    return f"{hours:02}:{minutes:02}:{seconds:02},{milliseconds:03}"
 
 def generate_xmp(video_path, markers, start_time_dt):
     """
     Generates an XMP sidecar file for the given video.
-    markers: list of (datetime, note)
-    start_time_dt: datetime of the video start
     """
     xmp_path = os.path.splitext(video_path)[0] + ".xmp"
     
-    # XMP Template
     xmp_content = f"""<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Adobe XMP Core 5.6-c137 79.159768, 2016/08/11-13:24:42        ">
  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about=""
@@ -69,26 +70,12 @@ def generate_xmp(video_path, markers, start_time_dt):
 """
     
     for mark_time, note in markers:
-        # Calculate offset in seconds
         delta = (mark_time - start_time_dt).total_seconds()
         if delta < 0:
-            continue # Marker is before this clip
+            continue 
             
-        # We need to know if the marker is *within* this clip.
-        # But for sidecars, usually we just put all markers relative to start?
-        # Premiere is smart enough to ignore ones out of range, usually.
-        # But better if we check duration if possible. 
-        # For now, we just add them if they are positive relative to start.
-        
-        # Format: 254016000000 is a common base for NTSC/PAL mix, but let's just use seconds * 254016000000 ?
-        # Actually, simpler is to use standard timecode or frame count if we knew framerate.
-        # Let's try to use the simple structure Adobe uses.
-        
-        # Adobe XMP markers use a specific tick rate. 
-        # Often 254016000000 per second.
         start_ticks = int(delta * 254016000000)
-        duration_ticks = 0 # Point marker
-        
+        duration_ticks = 0
         note_safe = note if note else "Marker"
         
         xmp_content += f"""         <rdf:li rdf:parseType="Resource">
@@ -114,14 +101,155 @@ def generate_xmp(video_path, markers, start_time_dt):
         f.write(xmp_content)
     print(f"Generated XMP: {xmp_path}")
 
+def generate_srt(video_path, markers, start_time_dt, duration_sec):
+    """
+    Generates SRT file for the video.
+    markers: list of (datetime, note)
+    start_time_dt: video start datetime
+    duration_sec: video duration in seconds
+    """
+    srt_path = os.path.splitext(video_path)[0] + ".srt"
+    
+    points = set()
+    points.add(0.0)
+    points.add(duration_sec)
+    
+    events = [] # (start_offset, end_offset, text)
+    state_changes = [] # (offset, key, value)
+    
+    # Process all markers to build state/event lists
+    for mark_time, note in markers:
+        offset = (mark_time - start_time_dt).total_seconds()
+        
+        # Parse note for key:value pairs
+        if ":" in note:
+            # Split by comma to handle multiple updates "spd:10, fm:stab"
+            subparts = note.split(',')
+            for sp in subparts:
+                if ":" in sp:
+                    k, v = sp.split(':', 1)
+                    state_changes.append((offset, k.strip().upper(), v.strip()))
+                    points.add(offset)
+                else:
+                    # Mixed content without colon -> Event
+                    events.append((offset, offset + 5.0, sp.strip()))
+                    points.add(offset)
+                    points.add(offset + 5.0)
+        else:
+            # Pure event
+            events.append((offset, offset + 5.0, note))
+            points.add(offset)
+            points.add(offset + 5.0)
+
+    # Filter points to be within [0, duration]
+    sorted_points = sorted([p for p in points if 0 <= p <= duration_sec])
+    sorted_points = sorted(list(set(sorted_points)))
+    
+    # Sort state changes by time for replay
+    state_changes.sort(key=lambda x: x[0])
+    
+    srt_entries = []
+    
+    for i in range(len(sorted_points) - 1):
+        t_start = sorted_points[i]
+        t_end = sorted_points[i+1]
+        
+        if t_end - t_start < 0.1:
+            continue
+            
+        mid_point = (t_start + t_end) / 2
+        
+        # Determine state at mid_point
+        current_state = {}
+        for off, k, v in state_changes:
+            if off <= mid_point:
+                current_state[k] = v
+            else:
+                break
+        
+        # Determine active events at mid_point
+        active_events = []
+        for start, end, text in events:
+            if start <= mid_point < end:
+                active_events.append(text)
+                
+        # Construct Text
+        lines = []
+        
+        # Telemetry Line
+        telemetry_parts = []
+        for k, v in current_state.items():
+            telemetry_parts.append(f"{k}: {v}")
+        
+        if telemetry_parts:
+            lines.append(" | ".join(telemetry_parts))
+            
+        # Events Line
+        if active_events:
+            lines.append(" | ".join(active_events))
+            
+        full_text = "\n".join(lines)
+        
+        if full_text:
+            srt_entries.append((t_start, t_end, full_text))
+
+    # Write SRT
+    with open(srt_path, "w", encoding="utf-8") as f:
+        for idx, (start, end, text) in enumerate(srt_entries, 1):
+            start_td = datetime.timedelta(seconds=start)
+            end_td = datetime.timedelta(seconds=end)
+            f.write(f"{idx}\n")
+            f.write(f"{format_srt_time(start_td)} --> {format_srt_time(end_td)}\n")
+            f.write(f"{text}\n\n")
+            
+    print(f"Generated SRT: {srt_path}")
+    return srt_path
+
+def burn_subtitles(video_path, srt_path, position):
+    """
+    Burns subtitles into video using FFmpeg.
+    Returns the path to the new video file.
+    """
+    burned_path = os.path.splitext(video_path)[0] + "_burned.mp4"
+    
+    # Map position to Alignment
+    align_map = {
+        "bottom": 2,
+        "top": 6,
+        "top-left": 5,
+        "top-right": 7,
+        "bottom-left": 1,
+        "bottom-right": 3,
+        "center": 10
+    }
+    alignment = align_map.get(position, 2)
+    
+    # Use forward slashes for FFmpeg filter path to avoid escaping issues
+    srt_path_clean = srt_path.replace("\\", "/").replace(":", "\\:")
+    
+    # FFmpeg command
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", video_path,
+        "-vf", f"subtitles='{srt_path_clean}':force_style='Alignment={alignment},MarginV=20,FontSize=24'",
+        "-c:a", "copy",
+        # "-c:v", "libx264", "-preset", "fast", # Default encoder
+        burned_path
+    ]
+    
+    print(f"Burning subtitles: {video_path} -> {burned_path} (Position: {position})")
+    try:
+        # Suppress output unless error
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return burned_path
+    except subprocess.CalledProcessError as e:
+        print(f"Error burning subtitles: {e.stderr.decode()}")
+        return None
+
 def generate_xml(take_name, take_dir, clips_by_ip, all_markers):
     """
     Generates FCP7 XML for the take.
-    clips_by_ip: dict { ip: [ {path, start_time, duration} ] }
-    all_markers: list of (datetime, note)
     """
-    
-    # Find the earliest start time to be the sequence start
     global_start = None
     for ip, clips in clips_by_ip.items():
         for clip in clips:
@@ -138,7 +266,7 @@ def generate_xml(take_name, take_dir, clips_by_ip, all_markers):
     
     sequence = ET.SubElement(children, "sequence", id="sequence-1")
     ET.SubElement(sequence, "name").text = take_name
-    ET.SubElement(sequence, "duration").text = "10000" # Placeholder
+    ET.SubElement(sequence, "duration").text = "10000" 
     
     rate = ET.SubElement(sequence, "rate")
     ET.SubElement(rate, "timebase").text = "25"
@@ -147,7 +275,6 @@ def generate_xml(take_name, take_dir, clips_by_ip, all_markers):
     media = ET.SubElement(sequence, "media")
     video = ET.SubElement(media, "video")
     
-    # Format definition
     format_node = ET.SubElement(video, "format")
     samplecharacteristics = ET.SubElement(format_node, "samplecharacteristics")
     rate_sc = ET.SubElement(samplecharacteristics, "rate")
@@ -156,17 +283,13 @@ def generate_xml(take_name, take_dir, clips_by_ip, all_markers):
     ET.SubElement(samplecharacteristics, "height").text = "1080"
     ET.SubElement(samplecharacteristics, "pixelaspectratio").text = "square"
 
-    # Tracks
-    # We create one track per IP (camera angle)
     sorted_ips = sorted(clips_by_ip.keys())
     
     for i, ip in enumerate(sorted_ips):
         track = ET.SubElement(video, "track")
-        
         clips = sorted(clips_by_ip[ip], key=lambda x: x['start_time'])
         
         for clip in clips:
-            # Calculate start frame on timeline
             offset_seconds = (clip['start_time'] - global_start).total_seconds()
             start_frame = int(offset_seconds * 25)
             duration_frames = int(clip['duration'] * 25)
@@ -182,7 +305,6 @@ def generate_xml(take_name, take_dir, clips_by_ip, all_markers):
             ET.SubElement(clipitem, "start").text = str(start_frame)
             ET.SubElement(clipitem, "end").text = str(end_frame)
             
-            # File reference
             file_node = ET.SubElement(clipitem, "file", id=f"file-{os.path.basename(clip['path'])}")
             ET.SubElement(file_node, "name").text = os.path.basename(clip['path'])
             ET.SubElement(file_node, "pathurl").text = "file://localhost/" + clip['path'].replace("\\", "/")
@@ -194,52 +316,41 @@ def generate_xml(take_name, take_dir, clips_by_ip, all_markers):
             video_f = ET.SubElement(media_f, "video")
             ET.SubElement(video_f, "duration").text = str(duration_frames)
 
-    # Sequence Markers
     if all_markers:
-        markers_node = ET.SubElement(sequence, "marker")
-        # Wait, FCP7 XML markers are inside <marker> tags, usually under <sequence> or <clipitem>
-        # But for sequence markers, it's a list of <marker> elements.
-        
         for mark_time, note in all_markers:
             offset_seconds = (mark_time - global_start).total_seconds()
             if offset_seconds >= 0:
                 frame = int(offset_seconds * 25)
-                
                 marker = ET.SubElement(sequence, "marker")
                 ET.SubElement(marker, "name").text = note if note else "Marker"
                 ET.SubElement(marker, "in").text = str(frame)
-                ET.SubElement(marker, "out").text = str(frame) # Duration 0 for point marker
+                ET.SubElement(marker, "out").text = str(frame)
                 ET.SubElement(marker, "comment").text = note if note else ""
 
-    # Save XML
     xml_str = minidom.parseString(ET.tostring(root)).toprettyxml(indent="  ")
     xml_path = os.path.join(take_dir, f"{take_name}.xml")
     with open(xml_path, "w", encoding="utf-8") as f:
         f.write(xml_str)
     print(f"Generated XML: {xml_path}")
 
-def process_take(take_path):
+def process_take(take_path, burn=False, position="bottom"):
     take_name = os.path.basename(take_path)
     print(f"Processing take: {take_name}")
     
-    # Data structure to hold clips
     clips_by_ip = {}
     all_markers = []
     
-    # Walk through IP folders
     for ip_folder in os.listdir(take_path):
         ip_path = os.path.join(take_path, ip_folder)
         if not os.path.isdir(ip_path):
             continue
             
-        # Find markers file
         marker_files = glob.glob(os.path.join(ip_path, "*_markers.txt"))
         take_markers = []
         if marker_files:
             with open(marker_files[0], "r") as f:
                 for line in f:
                     if line.startswith("MARK:"):
-                        # Parse MARK: <ISO> | <NOTE>
                         parts = line.strip().split("MARK:", 1)[1].strip().split("|", 1)
                         ts_str = parts[0].strip()
                         note = parts[1].strip() if len(parts) > 1 else ""
@@ -248,7 +359,6 @@ def process_take(take_path):
                             take_markers.append((dt, note))
                             all_markers.append((dt, note))
         
-        # Find video files
         video_files = glob.glob(os.path.join(ip_path, "*.mp4"))
         if not video_files:
              video_files = glob.glob(os.path.join(ip_path, "*.h264"))
@@ -259,8 +369,10 @@ def process_take(take_path):
         clips_by_ip[ip_folder] = []
         
         for vid in video_files:
-            # Parse filename: take_safeip_YYYYMMDD_HHMMSS_segment.mp4
-            # Regex to find timestamp
+            # Skip already burned files to avoid double processing
+            if "_burned" in vid:
+                continue
+
             match = re.search(r"_(\d{8}_\d{6})_", os.path.basename(vid))
             if match:
                 ts_str = match.group(1)
@@ -268,47 +380,39 @@ def process_take(take_path):
                 if start_time:
                     duration = get_video_duration(vid)
                     
-                    # Add segment offset if needed? 
-                    # Actually the filename timestamp is likely the start of that segment 
-                    # OR start of recording. 
-                    # If it's start of recording, we need segment index.
-                    # Filename: ..._000000.mp4
                     seg_match = re.search(r"_(\d{6})\.(mp4|h264)$", os.path.basename(vid))
                     if seg_match:
                         seg_idx = int(seg_match.group(1))
-                        # If timestamp is constant for all segments (start of take), add offset
-                        # But usually rotating file loggers update timestamp?
-                        # Let's check the code. 
-                        # control_pi_webapp.py line 400: base_filename = f"{take_name}_{safe_ip}_{timestamp}"
-                        # video_filename_template = ... f"{base_filename}_%06d.mp4"
-                        # So the timestamp in filename is the START of the recording.
-                        # We need to add segment_index * segment_duration to get actual start.
-                        # Default segment is 20 mins (1200s).
-                        
-                        # However, we don't know if user changed config.
-                        # Better to trust the file creation time? No, that's unreliable.
-                        # We should assume 20 mins or just rely on the fact that we place them sequentially on timeline?
-                        # XML placement needs exact time.
-                        
-                        # Let's assume 1200s segment for now as per default in listener.
                         segment_duration = 1200.0 
                         start_time = start_time + datetime.timedelta(seconds=seg_idx * segment_duration)
                     
+                    # Generate Sidecar (XMP)
+                    generate_xmp(vid, take_markers, start_time)
+                    
+                    # Generate SRT
+                    srt_path = generate_srt(vid, take_markers, start_time, duration)
+                    
+                    final_vid_path = vid
+                    
+                    # Burn-in if requested
+                    if burn:
+                        burned_path = burn_subtitles(vid, srt_path, position)
+                        if burned_path:
+                            final_vid_path = burned_path
+                    
                     clips_by_ip[ip_folder].append({
-                        'path': vid,
+                        'path': final_vid_path,
                         'start_time': start_time,
                         'duration': duration
                     })
-                    
-                    # Generate Sidecar
-                    generate_xmp(vid, take_markers, start_time)
 
-    # Generate XML
     generate_xml(take_name, take_path, clips_by_ip, all_markers)
 
 def main():
     parser = argparse.ArgumentParser(description="Process multicam takes for Premiere Pro.")
     parser.add_argument("directory", help="Directory containing takes (e.g. video_downloads)")
+    parser.add_argument("--burn", action="store_true", help="Burn subtitles into video files")
+    parser.add_argument("--position", default="bottom", choices=["bottom", "top", "top-left", "top-right", "bottom-left", "bottom-right", "center"], help="Position of burned subtitles")
     args = parser.parse_args()
     
     base_dir = args.directory
@@ -316,15 +420,9 @@ def main():
         print(f"Error: {base_dir} is not a directory.")
         return
 
-    # Check if this is a take directory itself (contains IPs) or a root dir
-    # Heuristic: check if subdirs look like IPs or if they contain IPs
-    # Actually, let's just assume it's the root 'video_downloads' folder containing takes.
-    
     for item in os.listdir(base_dir):
         path = os.path.join(base_dir, item)
         if os.path.isdir(path):
-            # Check if it looks like a take (contains IP folders)
-            # IP folder regex: \d+\.\d+\.\d+\.\d+ or similar
             has_ips = False
             for sub in os.listdir(path):
                 if re.match(r"\d+\.\d+\.\d+\.\d+", sub) or re.match(r"\d+_\d+_\d+_\d+", sub):
@@ -332,7 +430,7 @@ def main():
                     break
             
             if has_ips:
-                process_take(path)
+                process_take(path, burn=args.burn, position=args.position)
 
 if __name__ == "__main__":
     main()
