@@ -25,10 +25,11 @@ python process_takes.py "C:\path\to\video_downloads"
 
 *   `--burn`: Hard-code the text overlay into the video files. Requires FFmpeg.
 *   `--position [bottom|top|top-left|...]`: Set the position of the burned text. Default is `bottom`.
+*   `--lossless`: Use high-quality encoding (CRF 18) for burned videos to preserve quality.
 
 Example:
 ```bash
-python process_takes.py Test_videos --burn --position top-left
+python process_takes.py Test_videos --burn --position top-left --lossless
 ```
 
 ## Output
@@ -36,6 +37,7 @@ python process_takes.py Test_videos --burn --position top-left
 *   **Subtitle Files**: `filename.srt` created next to each video file (contains telemetry overlay).
 *   **Burned Videos**: `filename_burned.mp4` (if `--burn` is used).
 *   **XML Sequence**: `take_name.xml` created in each take folder.
+    *   **Layout**: The sequence is automatically set up as a **Split View (2x2)** with clips scaled to 50%.
 
 ## Importing into Premiere Pro
 1.  **Drag and Drop**: You can drag the generated `.xml` file directly into the Premiere Pro Project panel.

@@ -205,7 +205,7 @@ def generate_srt(video_path, markers, start_time_dt, duration_sec):
     print(f"Generated SRT: {srt_path}")
     return srt_path
 
-def burn_subtitles(video_path, srt_path, position):
+def burn_subtitles(video_path, srt_path, position, lossless=False):
     """
     Burns subtitles into video using FFmpeg.
     Returns the path to the new video file.
@@ -232,12 +232,19 @@ def burn_subtitles(video_path, srt_path, position):
         "ffmpeg", "-y",
         "-i", video_path,
         "-vf", f"subtitles='{srt_path_clean}':force_style='Alignment={alignment},MarginV=20,FontSize=24'",
-        "-c:a", "copy",
-        # "-c:v", "libx264", "-preset", "fast", # Default encoder
-        burned_path
+        "-c:a", "copy"
     ]
+
+    if lossless:
+        # CRF 18 is generally considered visually lossless
+        cmd.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"])
+    else:
+        # Default FFmpeg (usually CRF 23)
+        cmd.extend(["-c:v", "libx264", "-preset", "fast"])
+
+    cmd.append(burned_path)
     
-    print(f"Burning subtitles: {video_path} -> {burned_path} (Position: {position})")
+    print(f"Burning subtitles: {video_path} -> {burned_path} (Position: {position}, Lossless: {lossless})")
     try:
         # Suppress output unless error
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -285,9 +292,30 @@ def generate_xml(take_name, take_dir, clips_by_ip, all_markers):
 
     sorted_ips = sorted(clips_by_ip.keys())
     
+    # Grid positions for 2x2 Split View
+    # Premiere Pro / FCP7 XML Coordinate System for "Basic Motion":
+    # Center = (0, 0)
+    # Range is typically -100 to 100 (Percentage of frame from center to edge?)
+    # Top-Left Quadrant Center: x=-50, y=-50
+    # Top-Right Quadrant Center: x=50, y=-50
+    # Bottom-Left Quadrant Center: x=-50, y=50
+    # Bottom-Right Quadrant Center: x=50, y=50
+    
+    grid_positions = [
+        (-50, -50), # Index 0: Top-Left
+        (50, -50),  # Index 1: Top-Right
+        (-50, 50),  # Index 2: Bottom-Left
+        (50, 50)    # Index 3: Bottom-Right
+    ]
+
     for i, ip in enumerate(sorted_ips):
         track = ET.SubElement(video, "track")
         clips = sorted(clips_by_ip[ip], key=lambda x: x['start_time'])
+        
+        # Determine position for this camera angle
+        pos_x, pos_y = (0, 0)
+        if i < len(grid_positions):
+            pos_x, pos_y = grid_positions[i]
         
         for clip in clips:
             offset_seconds = (clip['start_time'] - global_start).total_seconds()
@@ -316,6 +344,37 @@ def generate_xml(take_name, take_dir, clips_by_ip, all_markers):
             video_f = ET.SubElement(media_f, "video")
             ET.SubElement(video_f, "duration").text = str(duration_frames)
 
+            # Apply Split View Filter (Basic Motion)
+            filter_node = ET.SubElement(clipitem, "filter")
+            effect_node = ET.SubElement(filter_node, "effect")
+            ET.SubElement(effect_node, "name").text = "Basic Motion"
+            ET.SubElement(effect_node, "effectid").text = "basic motion"
+            ET.SubElement(effect_node, "effectcategory").text = "motion"
+            ET.SubElement(effect_node, "effecttype").text = "motion"
+            ET.SubElement(effect_node, "mediatype").text = "video"
+            
+            # Scale Parameter
+            scale_param = ET.SubElement(effect_node, "parameter")
+            ET.SubElement(scale_param, "name").text = "Scale"
+            ET.SubElement(scale_param, "parameterid").text = "scale"
+            ET.SubElement(scale_param, "valuemin").text = "0"
+            ET.SubElement(scale_param, "valuemax").text = "1000"
+            
+            scale_kf = ET.SubElement(scale_param, "keyframe")
+            ET.SubElement(scale_kf, "when").text = "0"
+            ET.SubElement(scale_kf, "value").text = "50"
+            
+            # Center Parameter
+            center_param = ET.SubElement(effect_node, "parameter")
+            ET.SubElement(center_param, "name").text = "Center"
+            ET.SubElement(center_param, "parameterid").text = "center"
+            
+            center_kf = ET.SubElement(center_param, "keyframe")
+            ET.SubElement(center_kf, "when").text = "0"
+            val_node = ET.SubElement(center_kf, "value")
+            ET.SubElement(val_node, "horiz").text = str(pos_x)
+            ET.SubElement(val_node, "vert").text = str(pos_y)
+
     if all_markers:
         for mark_time, note in all_markers:
             offset_seconds = (mark_time - global_start).total_seconds()
@@ -333,7 +392,7 @@ def generate_xml(take_name, take_dir, clips_by_ip, all_markers):
         f.write(xml_str)
     print(f"Generated XML: {xml_path}")
 
-def process_take(take_path, burn=False, position="bottom"):
+def process_take(take_path, burn=False, position="bottom", lossless=False):
     take_name = os.path.basename(take_path)
     print(f"Processing take: {take_name}")
     
@@ -396,7 +455,7 @@ def process_take(take_path, burn=False, position="bottom"):
                     
                     # Burn-in if requested
                     if burn:
-                        burned_path = burn_subtitles(vid, srt_path, position)
+                        burned_path = burn_subtitles(vid, srt_path, position, lossless)
                         if burned_path:
                             final_vid_path = burned_path
                     
@@ -413,6 +472,7 @@ def main():
     parser.add_argument("directory", help="Directory containing takes (e.g. video_downloads)")
     parser.add_argument("--burn", action="store_true", help="Burn subtitles into video files")
     parser.add_argument("--position", default="bottom", choices=["bottom", "top", "top-left", "top-right", "bottom-left", "bottom-right", "center"], help="Position of burned subtitles")
+    parser.add_argument("--lossless", action="store_true", help="Use lossless compression (CRF 18) for burned video")
     args = parser.parse_args()
     
     base_dir = args.directory
@@ -430,7 +490,7 @@ def main():
                     break
             
             if has_ips:
-                process_take(path, burn=args.burn, position=args.position)
+                process_take(path, burn=args.burn, position=args.position, lossless=args.lossless)
 
 if __name__ == "__main__":
     main()

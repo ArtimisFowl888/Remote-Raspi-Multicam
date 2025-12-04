@@ -200,7 +200,10 @@ def initialize_camera():
             video_config = picam2.create_video_configuration(
                 main={"size": MAIN_STREAM_RESOLUTION},
                 lores={"size": PREVIEW_RESOLUTION},
-                controls={"FrameRate": MAIN_STREAM_FRAMERATE}
+                controls={
+                    "FrameRate": MAIN_STREAM_FRAMERATE,
+                    "FrameDurationLimits": (int(1000000 / MAIN_STREAM_FRAMERATE), int(1000000 / MAIN_STREAM_FRAMERATE))
+                }
             )
             picam2.configure(video_config)
             print(f"[{datetime.now().isoformat()}] [Info] Picamera2 configured for {MAIN_STREAM_RESOLUTION} main stream and {PREVIEW_RESOLUTION} preview.")
