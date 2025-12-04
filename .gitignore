@@ -214,3 +214,6 @@ __marimo__/
 *.xml
 *.xmp
 *.srt
+*.mov
+output_test2.txt
+output.txt
